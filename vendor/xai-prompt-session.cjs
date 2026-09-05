@@ -1,4 +1,5 @@
 "use strict";
+const SYNTHETIC_USER = Symbol("ungrok synthetic continuation");
 
 /**
  * Sand / Grok Bot custom inference session.
@@ -403,7 +404,7 @@ function convertMessages(rawList) {
     }
   }
   if (out.length && out[out.length - 1].role === "assistant") {
-    out.push({ role: "user", content: "(continue)" });
+    out.push({ role: "user", content: "(continue)", [SYNTHETIC_USER]: true });
   }
   if (!out.length) {
     out.push({ role: "user", content: "(empty)" });
@@ -423,6 +424,7 @@ function messageChars(msg) {
   else if (Array.isArray(msg.content)) {
     for (const p of msg.content) {
       if (!p) continue;
+      if (p.type === "image_url") continue; // Image bytes have separate request-size limits.
       if (typeof p === "string") n += p.length;
       else if (typeof p.text === "string") n += p.text.length;
       else n += JSON.stringify(p).length;
@@ -439,6 +441,22 @@ function clipText(s, max) {
 }
 
 function clipMessageContent(msg, max) {
+  if (msg && Array.isArray(msg.content)) {
+    let remaining = max;
+    return { ...msg, content: msg.content.map(part => {
+      if (typeof part === "string") {
+        const clipped = remaining > 0 ? clipText(part, remaining) : "";
+        remaining = Math.max(0, remaining - clipped.length);
+        return clipped;
+      }
+      if (part && typeof part.text === "string") {
+        const clipped = remaining > 0 ? clipText(part.text, remaining) : "";
+        remaining = Math.max(0, remaining - clipped.length);
+        return { ...part, text: clipped };
+      }
+      return part;
+    }) };
+  }
   if (!msg || typeof msg.content !== "string" || msg.content.length <= max) return msg;
   return { ...msg, content: clipText(msg.content, max) };
 }
@@ -527,7 +545,7 @@ function dropOldestTurn(msgs) {
   // function-call never becomes the first turn after system.
   if (msgs[i].role === "user") {
     let j = i + 1;
-    while (j < msgs.length - 1 && msgs[j].role !== "user") j++;
+    while (j < msgs.length && (msgs[j].role !== "user" || msgs[j][SYNTHETIC_USER])) j++;
     if (j >= msgs.length) return false;
     msgs.splice(i, j - i);
     return true;
@@ -546,6 +564,24 @@ function dropOldestTurn(msgs) {
 // threads plus one huge tool result (file dump) blow that. Keep system + recent turns.
 function trimConvertedMessages(messages, model) {
   const list = Array.isArray(messages) ? messages.map((m) => ({ ...m })) : [];
+  // Keep a bounded number of recent images across multi-message uploads.
+  // Never count their encoded bytes as text tokens or silently remove the
+  // latest request. Older images are replaced by an explicit context marker.
+  const lastRequest = list.findLastIndex(m => m.role === "user" && !m[SYNTHETIC_USER]);
+  let recentImages = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!Array.isArray(list[i].content)) continue;
+    const parts = [...list[i].content];
+    for (let j = parts.length - 1; j >= 0; j--) {
+      if (parts[j]?.type !== "image_url") continue;
+      recentImages++;
+      if (recentImages > 20) {
+        if (i >= lastRequest) throw new Error("latest request exceeds 20 image context limit");
+        parts[j] = { type: "text", text: "[Earlier image omitted from context; reattach if needed.]" };
+      }
+    }
+    list[i].content = parts;
+  }
   const gemini = /gemini/i.test(String(model || ""));
   const maxTool = intEnv("SAND_XAI_MAX_TOOL_CHARS", 12000);
   const maxSys = intEnv("SAND_XAI_MAX_SYSTEM_CHARS", 60000);
@@ -580,6 +616,7 @@ function trimConvertedMessages(messages, model) {
 
   const normalized = normalizeToolTurns(list);
   const after = normalized.reduce((n, m) => n + messageChars(m), 0);
+  if (after > maxTotal) throw new Error("latest request and tool context exceed text budget; start a shorter task");
   if (after !== before || dropped || normalized.length !== beforeCount) {
     console.error(
       `[sand-xai] trimmed input chars ${before}→${after} msgs ${beforeCount}→${normalized.length} droppedTurns=${dropped} model=${model}`

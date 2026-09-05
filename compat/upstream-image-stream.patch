@@ -1,6 +1,12 @@
 --- xai-prompt-session.cjs
 +++ xai-prompt-session.cjs
-@@ -85,6 +85,9 @@
+@@ -1,4 +1,5 @@
+ "use strict";
++const SYNTHETIC_USER = Symbol("ungrok synthetic continuation");
+ 
+ /**
+  * Sand / Grok Bot custom inference session.
+@@ -85,6 +86,9 @@
    const t = typeof value;
    if (t === "string" || t === "number" || t === "boolean") return value;
    if (t !== "object") return value;
@@ -10,7 +16,7 @@
    seen = seen || new WeakSet();
    if (seen.has(value)) return undefined;
    seen.add(value);
-@@ -96,7 +99,6 @@
+@@ -96,7 +100,6 @@
      }
    }
    if (Array.isArray(value)) return value.map((v) => unwrapRedacted(v, seen));
@@ -18,7 +24,7 @@
    if (typeof value.toJSON === "function") {
      try {
        const j = value.toJSON();
-@@ -131,6 +133,8 @@
+@@ -131,6 +134,8 @@
  
  function asString(value) {
    const v = unwrapRedacted(value);
@@ -27,7 +33,7 @@
    if (v == null) return "";
    if (typeof v === "string") return v;
    if (typeof v === "number" || typeof v === "boolean") return String(v);
-@@ -285,6 +289,23 @@
+@@ -285,6 +290,23 @@
    }
  }
  
@@ -51,7 +57,7 @@
  function convertContentPart(part) {
    const p = unwrapRedacted(part);
    if (p == null) return null;
-@@ -316,8 +337,26 @@
+@@ -316,8 +338,26 @@
      };
    }
    if (type === "image" || type === "image_url" || type === "input_image") {
@@ -80,7 +86,47 @@
    }
    if (p.text) return { kind: "text", text: asString(p.text) };
    return null;
-@@ -471,9 +510,15 @@
+@@ -420,7 +460,7 @@
+     }
+   }
+   if (out.length && out[out.length - 1].role === "assistant") {
+-    out.push({ role: "user", content: "(continue)" });
++    out.push({ role: "user", content: "(continue)", [SYNTHETIC_USER]: true });
+   }
+   if (!out.length) {
+     out.push({ role: "user", content: "(empty)" });
+@@ -440,6 +480,7 @@
+   else if (Array.isArray(msg.content)) {
+     for (const p of msg.content) {
+       if (!p) continue;
++      if (p.type === "image_url") continue; // Image bytes have separate request-size limits.
+       if (typeof p === "string") n += p.length;
+       else if (typeof p.text === "string") n += p.text.length;
+       else n += JSON.stringify(p).length;
+@@ -456,6 +497,22 @@
+ }
+ 
+ function clipMessageContent(msg, max) {
++  if (msg && Array.isArray(msg.content)) {
++    let remaining = max;
++    return { ...msg, content: msg.content.map(part => {
++      if (typeof part === "string") {
++        const clipped = remaining > 0 ? clipText(part, remaining) : "";
++        remaining = Math.max(0, remaining - clipped.length);
++        return clipped;
++      }
++      if (part && typeof part.text === "string") {
++        const clipped = remaining > 0 ? clipText(part.text, remaining) : "";
++        remaining = Math.max(0, remaining - clipped.length);
++        return { ...part, text: clipped };
++      }
++      return part;
++    }) };
++  }
+   if (!msg || typeof msg.content !== "string" || msg.content.length <= max) return msg;
+   return { ...msg, content: clipText(msg.content, max) };
+ }
+@@ -471,9 +528,15 @@
      if (Array.isArray(m.tool_calls)) m.tool_calls = m.tool_calls.map((t) => ({ ...t }));
      const last = out[out.length - 1];
      if (m.role === "user" && last && last.role === "user") {
@@ -99,7 +145,48 @@
        continue;
      }
      if (m.role === "assistant" && last && last.role === "assistant") {
-@@ -597,6 +642,86 @@
+@@ -538,7 +601,7 @@
+   // function-call never becomes the first turn after system.
+   if (msgs[i].role === "user") {
+     let j = i + 1;
+-    while (j < msgs.length - 1 && msgs[j].role !== "user") j++;
++    while (j < msgs.length && (msgs[j].role !== "user" || msgs[j][SYNTHETIC_USER])) j++;
+     if (j >= msgs.length) return false;
+     msgs.splice(i, j - i);
+     return true;
+@@ -557,6 +620,24 @@
+ // threads plus one huge tool result (file dump) blow that. Keep system + recent turns.
+ function trimConvertedMessages(messages, model) {
+   const list = Array.isArray(messages) ? messages.map((m) => ({ ...m })) : [];
++  // Keep a bounded number of recent images across multi-message uploads.
++  // Never count their encoded bytes as text tokens or silently remove the
++  // latest request. Older images are replaced by an explicit context marker.
++  const lastRequest = list.findLastIndex(m => m.role === "user" && !m[SYNTHETIC_USER]);
++  let recentImages = 0;
++  for (let i = list.length - 1; i >= 0; i--) {
++    if (!Array.isArray(list[i].content)) continue;
++    const parts = [...list[i].content];
++    for (let j = parts.length - 1; j >= 0; j--) {
++      if (parts[j]?.type !== "image_url") continue;
++      recentImages++;
++      if (recentImages > 20) {
++        if (i >= lastRequest) throw new Error("latest request exceeds 20 image context limit");
++        parts[j] = { type: "text", text: "[Earlier image omitted from context; reattach if needed.]" };
++      }
++    }
++    list[i].content = parts;
++  }
+   const gemini = /gemini/i.test(String(model || ""));
+   const maxTool = intEnv("SAND_XAI_MAX_TOOL_CHARS", 12000);
+   const maxSys = intEnv("SAND_XAI_MAX_SYSTEM_CHARS", 60000);
+@@ -591,12 +672,93 @@
+ 
+   const normalized = normalizeToolTurns(list);
+   const after = normalized.reduce((n, m) => n + messageChars(m), 0);
++  if (after > maxTotal) throw new Error("latest request and tool context exceed text budget; start a shorter task");
+   if (after !== before || dropped || normalized.length !== beforeCount) {
+     console.error(
+       `[sand-xai] trimmed input chars ${before}→${after} msgs ${beforeCount}→${normalized.length} droppedTurns=${dropped} model=${model}`
      );
    }
    return normalized;
@@ -186,7 +273,7 @@
  }
  
  function convertTools(tools) {
-@@ -659,7 +784,8 @@
+@@ -659,16 +821,20 @@
    return s;
  }
  
@@ -196,7 +283,10 @@
    const u = new URL(urlString);
    const lib = u.protocol === "https:" ? https : http;
    const payload = Buffer.from(body, "utf8");
-@@ -669,6 +795,8 @@
++  if (payload.length > 16 * 1024 * 1024) throw new Error("provider request exceeds 16 MiB size limit after image resize");
+   const reqHeaders = {
+     "Content-Type": "application/json",
+     Accept: "text/event-stream",
      "Content-Length": String(payload.length),
      ...headers,
    };
@@ -205,7 +295,7 @@
    return new Promise((resolve, reject) => {
      const req = lib.request(
        {
-@@ -684,6 +812,8 @@
+@@ -684,6 +850,8 @@
          let buffer = "";
          const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 300;
          res.setEncoding("utf8");
@@ -214,7 +304,7 @@
          res.on("data", (chunk) => {
            if (!ok) {
              chunks.push(chunk);
-@@ -722,8 +852,13 @@
+@@ -722,8 +890,13 @@
        req.destroy(new Error("xAI request timed out"));
      });
      req.on("error", reject);
@@ -229,7 +319,7 @@
  }
  
  function buildResponseMessages(text, toolCalls) {
-@@ -765,8 +900,9 @@
+@@ -765,8 +938,9 @@
    };
  }
  
@@ -241,7 +331,7 @@
    debugDump(messages, converted);
    const openaiTools = convertTools(tools);
  
-@@ -803,10 +939,12 @@
+@@ -803,10 +977,12 @@
  
    const push = (part) => {
      parts.push(part);
@@ -254,13 +344,10 @@
        headers,
        body: JSON.stringify(body),
        onData: (evt) => {
-@@ -900,7 +1038,40 @@
-     extendedUsage: normalizeExtendedUsage(usageRaw),
-     providerMetadata: reasoning ? { reasoning } : {},
-     invocationId,
-+  };
-+}
-+
+@@ -903,6 +1079,39 @@
+   };
+ }
+ 
 +// A custom iterator, not an async generator: return() must cancel even while
 +// next() is waiting for upstream data.
 +function liveParts(controller) {
@@ -270,7 +357,7 @@
 +  const finish = () => {
 +    ended = true;
 +    while (waiters.length) waiters.shift()({ done: true, value: undefined });
-   };
++  };
 +  return {
 +    push(value) {
 +      if (ended) return;
@@ -292,10 +379,12 @@
 +      return Promise.resolve({ done: true, value: undefined });
 +    },
 +  };
- }
- 
++}
++
  function createExecutor(session) {
-@@ -920,7 +1091,16 @@
+   const state = { messages: [] };
+   return {
+@@ -920,7 +1129,16 @@
      clearMessages() {
        state.messages = [];
      },
@@ -313,7 +402,7 @@
        if (typeof session.onRequestId === "function") {
          try {
            session.onRequestId(invocationId);
-@@ -941,18 +1121,23 @@
+@@ -941,18 +1159,23 @@
          }
          return runStream({
            model,
@@ -344,7 +433,7 @@
        return {
          fullStream,
          response: processing.then((r) => r.response),
-@@ -999,6 +1184,7 @@
+@@ -999,6 +1222,7 @@
    normalizeToolParameters,
    mapModelId,
    trimConvertedMessages,

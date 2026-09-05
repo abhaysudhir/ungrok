@@ -4,7 +4,9 @@
 
 Expected original SHA-256: `706758a5d95601b7aed989f582ce6abf2b672842f02d85a0e4a4590011cc07a5`.
 
-Expected patched SHA-256: `48f430f98147d02e493963b3b3eef9b483ffaed48501bb1d05a5a9e3ecd4c526`.
+Expected patched SHA-256: `5f9d78357cd55cd5e74312280319882cd68f5a30e69900a7dfd7ae047c8a0e94`.
+
+The follow-up repair excludes image bytes from the text budget and prevents trimming the latest real user request after assistant/tool messages. It retains at most 20 recent images, supports ten images across adjacent upload batches, and caps the actual post-resize request separately at 16 MiB. This fixes a live failure where the bot acknowledged images and then lost the request on its next call. The new sequence is covered by regression tests; a new live verification is pending.
 
 The patch fixes binary image expansion, adjacent-message image loss, buffered streaming, and cancellation. Large inline images require Python 3 and Pillow plus `scripts/resize_image.py` installed next to the adapter as `ungrok-resize-image.py`. Originals are unchanged. Back up the exact adapter before applying; validate the staged file with the host's Node runtime before replacement. Do not apply to a different hash. A supervised host restart is required and interrupts active work.
 

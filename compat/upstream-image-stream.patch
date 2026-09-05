@@ -1,0 +1,354 @@
+--- xai-prompt-session.cjs
++++ xai-prompt-session.cjs
+@@ -85,6 +85,9 @@
+   const t = typeof value;
+   if (t === "string" || t === "number" || t === "boolean") return value;
+   if (t !== "object") return value;
++  // Preserve bytes before object enumeration/toJSON. Enumerating Uint8Array
++  // expands every image byte into a numeric JSON property.
++  if (Buffer.isBuffer(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof URL) return value;
+   seen = seen || new WeakSet();
+   if (seen.has(value)) return undefined;
+   seen.add(value);
+@@ -96,7 +99,6 @@
+     }
+   }
+   if (Array.isArray(value)) return value.map((v) => unwrapRedacted(v, seen));
+-  if (Buffer.isBuffer(value)) return value.toString("utf8");
+   if (typeof value.toJSON === "function") {
+     try {
+       const j = value.toJSON();
+@@ -131,6 +133,8 @@
+ 
+ function asString(value) {
+   const v = unwrapRedacted(value);
++  if (v instanceof URL) return v.href;
++  if (Buffer.isBuffer(v) || ArrayBuffer.isView(v) || v instanceof ArrayBuffer) return "[binary data omitted]";
+   if (v == null) return "";
+   if (typeof v === "string") return v;
+   if (typeof v === "number" || typeof v === "boolean") return String(v);
+@@ -285,6 +289,23 @@
+   }
+ }
+ 
++function binaryImageUrl(value, declaredMime) {
++  let bytes;
++  if (Buffer.isBuffer(value)) bytes = value;
++  else if (ArrayBuffer.isView(value)) bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
++  else if (value instanceof ArrayBuffer) bytes = Buffer.from(value);
++  else return null;
++  if (bytes.length > 20 * 1024 * 1024) throw new Error("image exceeds 20 MiB limit");
++  let mime;
++  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) mime = "image/png";
++  else if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) mime = "image/jpeg";
++  else if (bytes.length >= 6 && /^(GIF87a|GIF89a)$/.test(bytes.subarray(0,6).toString("ascii"))) mime = "image/gif";
++  else if (bytes.length >= 12 && bytes.subarray(0,4).toString("ascii") === "RIFF" && bytes.subarray(8,12).toString("ascii") === "WEBP") mime = "image/webp";
++  if (!mime) return null;
++  if (declaredMime != null && String(declaredMime).toLowerCase().replace("image/jpg", "image/jpeg") !== mime) return null;
++  return `data:${mime};base64,${bytes.toString("base64")}`;
++}
++
+ function convertContentPart(part) {
+   const p = unwrapRedacted(part);
+   if (p == null) return null;
+@@ -316,8 +337,26 @@
+     };
+   }
+   if (type === "image" || type === "image_url" || type === "input_image") {
+-    const url = p.image_url?.url ?? p.url ?? p.image;
+-    if (url) return { kind: "image", url: asString(url) };
++    const binary = p.image ?? p.data ?? p.source?.data;
++    const declaredMime = p.mediaType ?? p.mimeType ?? p.mime_type ?? p.media_type ?? p.source?.media_type ?? p.source?.mimeType;
++    const binaryUrl = binaryImageUrl(binary, declaredMime);
++    if (binaryUrl) return { kind: "image", url: binaryUrl };
++    const urlObject = p.image_url?.url ?? p.image_url ?? p.url ?? p.image ?? p.source?.url;
++    if (urlObject instanceof URL) return { kind: "image", url: urlObject.href };
++    const url = p.image_url?.url ?? (typeof p.image_url === "string" ? p.image_url : undefined) ??
++      p.url ?? (typeof p.image === "string" ? p.image : undefined) ??
++      (p.source?.type === "url" ? p.source.url : undefined);
++    if (typeof url === "string" && url) return { kind: "image", url };
++    const source = p.source?.type === "base64" ? p.source : p;
++    const mime = source.media_type ?? source.mimeType ?? source.mime_type;
++    const data = source.data;
++    // Do not stringify binary objects or truncate image bytes into invalid URLs.
++    if (typeof mime === "string" && /^image\/(png|jpeg|gif|webp)$/i.test(mime) &&
++        typeof data === "string" && data.length && /^[A-Za-z0-9+/]*={0,2}$/.test(data) &&
++        data.length % 4 !== 1 && (Buffer.from(data, "base64").toString("base64") === data ||
++          Buffer.from(data, "base64").toString("base64").replace(/=+$/, "") === data)) {
++      return { kind: "image", url: `data:${mime.toLowerCase()};base64,${data}` };
++    }
+   }
+   if (p.text) return { kind: "text", text: asString(p.text) };
+   return null;
+@@ -471,9 +510,15 @@
+     if (Array.isArray(m.tool_calls)) m.tool_calls = m.tool_calls.map((t) => ({ ...t }));
+     const last = out[out.length - 1];
+     if (m.role === "user" && last && last.role === "user") {
+-      const a = typeof last.content === "string" ? last.content : "";
+-      const b = typeof m.content === "string" ? m.content : "";
+-      last.content = [a, b].filter(Boolean).join("\n\n");
++      if (Array.isArray(last.content) || Array.isArray(m.content)) {
++        const parts = (content) => Array.isArray(content) ? content :
++          typeof content === "string" && content ? [{ type: "text", text: content }] : [];
++        last.content = [...parts(last.content), ...parts(m.content)];
++      } else {
++        const a = typeof last.content === "string" ? last.content : "";
++        const b = typeof m.content === "string" ? m.content : "";
++        last.content = [a, b].filter(Boolean).join("\n\n");
++      }
+       continue;
+     }
+     if (m.role === "assistant" && last && last.role === "assistant") {
+@@ -597,6 +642,86 @@
+     );
+   }
+   return normalized;
++}
++
++async function prepareInlineImages(messages, signal) {
++  const maxInputChars = Math.ceil((20 * 1024 * 1024) / 3) * 4;
++  const maxOutputBytes = 6 * 1024 * 1024;
++  const copied = messages.map((message) => ({
++    ...message,
++    content: Array.isArray(message.content)
++      ? message.content.map((part) => part && typeof part === "object" ? { ...part } : part)
++      : message.content,
++  }));
++  for (const message of copied) {
++    if (!Array.isArray(message.content)) continue;
++    for (const part of message.content) {
++      if (signal?.aborted) throw new Error("provider request cancelled");
++      const url = part?.type === "image_url" ? part.image_url?.url : undefined;
++      if (typeof url !== "string" || url.length <= 200000) continue;
++      const prefix = /^data:image\/[A-Za-z0-9.+-]+;base64,/.exec(url);
++      if (!prefix) continue; // Remote URLs are never fetched by this helper.
++      const data = url.slice(prefix[0].length);
++      if (data.length > maxInputChars) throw new Error("ungrok image exceeds 20 MiB input limit");
++      const installed = path.join(__dirname, "ungrok-resize-image.py");
++      const source = path.join(__dirname, "../scripts/resize_image.py");
++      const helper = fs.existsSync(installed) ? installed : fs.existsSync(source) ? source : null;
++      if (!helper) throw new Error("ungrok large image requires the resize helper and Python Pillow");
++      const resized = await new Promise((resolve, reject) => {
++        let child;
++        let settled = false;
++        let timer;
++        let size = 0;
++        const chunks = [];
++        const finish = (error, value) => {
++          if (settled) return;
++          settled = true;
++          clearTimeout(timer);
++          signal?.removeEventListener("abort", onAbort);
++          if (error && child && child.exitCode === null) child.kill("SIGKILL");
++          if (error) reject(error); else resolve(value);
++        };
++        const fail = () => finish(new Error("ungrok image resize failed; check Python Pillow and image limits"));
++        const onAbort = () => finish(new Error("provider request cancelled"));
++        try {
++          child = require("child_process").spawn("python3", [helper], {
++            shell: false, stdio: ["pipe", "pipe", "ignore"],
++          });
++        } catch { fail(); return; }
++        timer = setTimeout(() => finish(new Error("ungrok image resize deadline exceeded")), 20000);
++        signal?.addEventListener("abort", onAbort, { once: true });
++        child.on("error", fail);
++        child.stdin.on("error", fail);
++        child.stdout.on("error", fail);
++        child.stdout.on("data", (chunk) => {
++          if (settled) return;
++          size += chunk.length;
++          if (size > maxOutputBytes) {
++            finish(new Error("ungrok image resize output exceeds limit"));
++            return;
++          }
++          chunks.push(chunk);
++        });
++        child.on("close", (code) => {
++          if (settled) return;
++          if (code !== 0) { fail(); return; }
++          try {
++            const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
++            if (result?.mimeType !== "image/jpeg" || typeof result.data !== "string" ||
++                !result.data || result.data.length > Math.ceil((4 * 1024 * 1024) / 3) * 4 ||
++                result.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(result.data)) {
++              fail(); return;
++            }
++            finish(null, result);
++          } catch { fail(); }
++        });
++        if (signal?.aborted) { onAbort(); return; }
++        try { child.stdin.end(JSON.stringify({ data })); } catch { fail(); }
++      });
++      part.image_url = { ...part.image_url, url: "data:" + resized.mimeType + ";base64," + resized.data };
++    }
++  }
++  return copied;
+ }
+ 
+ function convertTools(tools) {
+@@ -659,7 +784,8 @@
+   return s;
+ }
+ 
+-function httpPostStream(urlString, { headers, body, onData }) {
++function httpPostStream(urlString, { headers, body, onData, signal }) {
++  if (signal?.aborted) return Promise.reject(new Error("provider request cancelled"));
+   const u = new URL(urlString);
+   const lib = u.protocol === "https:" ? https : http;
+   const payload = Buffer.from(body, "utf8");
+@@ -669,6 +795,8 @@
+     "Content-Length": String(payload.length),
+     ...headers,
+   };
++  let deadline;
++  let removeAbort = () => {};
+   return new Promise((resolve, reject) => {
+     const req = lib.request(
+       {
+@@ -684,6 +812,8 @@
+         let buffer = "";
+         const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 300;
+         res.setEncoding("utf8");
++        res.on("error", reject);
++        res.on("aborted", () => reject(new Error("provider response interrupted")));
+         res.on("data", (chunk) => {
+           if (!ok) {
+             chunks.push(chunk);
+@@ -722,8 +852,13 @@
+       req.destroy(new Error("xAI request timed out"));
+     });
+     req.on("error", reject);
++    deadline = setTimeout(() => req.destroy(new Error("provider request deadline exceeded")), 300000);
++    const onAbort = () => req.destroy(new Error("provider request cancelled"));
++    signal?.addEventListener("abort", onAbort, { once: true });
++    removeAbort = () => signal?.removeEventListener("abort", onAbort);
++    if (signal?.aborted) onAbort();
+     req.end(payload);
+-  });
++  }).finally(() => { clearTimeout(deadline); removeAbort(); });
+ }
+ 
+ function buildResponseMessages(text, toolCalls) {
+@@ -765,8 +900,9 @@
+   };
+ }
+ 
+-async function runStream({ model, messages, tools, invocationId, auth }) {
+-  const converted = trimConvertedMessages(convertMessages(messages), model);
++async function runStream({ model, messages, tools, invocationId, auth, signal, onPart }) {
++  const trimmed = trimConvertedMessages(convertMessages(messages), model);
++  const converted = await prepareInlineImages(trimmed, signal);
+   debugDump(messages, converted);
+   const openaiTools = convertTools(tools);
+ 
+@@ -803,10 +939,12 @@
+ 
+   const push = (part) => {
+     parts.push(part);
++    if (onPart) onPart(part);
+   };
+ 
+   try {
+     await httpPostStream(url, {
++      signal,
+       headers,
+       body: JSON.stringify(body),
+       onData: (evt) => {
+@@ -900,7 +1038,40 @@
+     extendedUsage: normalizeExtendedUsage(usageRaw),
+     providerMetadata: reasoning ? { reasoning } : {},
+     invocationId,
++  };
++}
++
++// A custom iterator, not an async generator: return() must cancel even while
++// next() is waiting for upstream data.
++function liveParts(controller) {
++  const values = [];
++  const waiters = [];
++  let ended = false;
++  const finish = () => {
++    ended = true;
++    while (waiters.length) waiters.shift()({ done: true, value: undefined });
+   };
++  return {
++    push(value) {
++      if (ended) return;
++      if (waiters.length) waiters.shift()({ done: false, value });
++      else if (values.length < 10000) values.push(value);
++      else { controller.abort(); finish(); }
++    },
++    finish,
++    [Symbol.asyncIterator]() { return this; },
++    next() {
++      if (values.length) return Promise.resolve({ done: false, value: values.shift() });
++      if (ended) return Promise.resolve({ done: true, value: undefined });
++      return new Promise(resolve => waiters.push(resolve));
++    },
++    return() {
++      values.length = 0;
++      controller.abort();
++      finish();
++      return Promise.resolve({ done: true, value: undefined });
++    },
++  };
+ }
+ 
+ function createExecutor(session) {
+@@ -920,7 +1091,16 @@
+     clearMessages() {
+       state.messages = [];
+     },
+-    stream(ctx, invocationId, tools) {
++    stream(ctx, invocationId, tools, requestOptions) {
++      const controller = new AbortController();
++      const fullStream = liveParts(controller);
++      const signals = [...new Set([ctx?.abortSignal, ctx?.signal, requestOptions?.abortSignal, requestOptions?.signal])]
++        .filter(signal => signal && typeof signal.addEventListener === "function");
++      const onAbort = () => controller.abort();
++      for (const signal of signals) {
++        signal.addEventListener("abort", onAbort, { once: true });
++        if (signal.aborted) controller.abort();
++      }
+       if (typeof session.onRequestId === "function") {
+         try {
+           session.onRequestId(invocationId);
+@@ -941,18 +1121,23 @@
+         }
+         return runStream({
+           model,
+-          messages: state.messages,
++          messages: [...state.messages],
+           tools,
+           invocationId,
+           auth,
++          signal: controller.signal,
++          onPart: part => fullStream.push(part),
+         });
+-      })();
++      })().catch(() => errorResult(session.getModelId(), invocationId, new Error("provider request preparation failed")))
++        .then(result => {
++          if (result.response.finishReason === "error") {
++            for (const part of result.parts) fullStream.push(part);
++          }
++          fullStream.finish();
++          for (const signal of signals) signal.removeEventListener("abort", onAbort);
++          return result;
++        });
+ 
+-      const fullStream = (async function* () {
+-        const result = await processing;
+-        for (const part of result.parts) yield part;
+-      })();
+-
+       return {
+         fullStream,
+         response: processing.then((r) => r.response),
+@@ -999,6 +1184,7 @@
+   normalizeToolParameters,
+   mapModelId,
+   trimConvertedMessages,
++  prepareInlineImages,
+ };
+ 
+ if (require.main === module) {

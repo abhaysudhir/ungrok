@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/abhaysudhir/ungrok/security/advisories/new
+    about: Report vulnerabilities privately. Never post credentials in issues.
+  - name: Setup questions
+    url: https://github.com/abhaysudhir/ungrok/discussions
+    about: Ask a question after reading the setup and troubleshooting guides.

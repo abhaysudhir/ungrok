@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible failure without secrets or raw logs.
+body:
+  - type: markdown
+    attributes:
+      value: Never paste keys, credential files, full host logs, or conversation content. Use private security reporting for vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: ungrok version or commit
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Grok Bot client version and last computer update
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps and expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include only the relevant sanitized error. Redact hostnames if private.
+    validations:
+      required: true

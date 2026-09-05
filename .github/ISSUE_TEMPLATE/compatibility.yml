@@ -1,0 +1,34 @@
+name: Compatibility report
+description: Record what you actually tested on a host and endpoint.
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: ungrok commit and Grok Bot client version
+    validations:
+      required: true
+  - type: input
+    id: endpoint
+    attributes:
+      label: Endpoint type and model ID
+      description: No API keys or private endpoint URLs.
+    validations:
+      required: true
+  - type: checkboxes
+    id: tested
+    attributes:
+      label: What passed?
+      options:
+        - label: Read-only doctor
+        - label: Synthetic endpoint probe
+        - label: Real app reply with matching fresh route log
+        - label: Harmless tool call
+        - label: Browser workflow
+        - label: Post-update repair
+        - label: Rollback
+  - type: textarea
+    id: limitations
+    attributes:
+      label: Failures, untested paths, and sanitized evidence
+    validations:
+      required: true

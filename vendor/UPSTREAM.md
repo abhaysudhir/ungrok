@@ -1,0 +1,14 @@
+# Adapter provenance
+
+`xai-prompt-session.cjs` is derived from [BlockedPath/grok-bot-setup](https://github.com/BlockedPath/grok-bot-setup), commit `d9119f9632c635473213c57ace336028f7278abd`, upstream file `xai-prompt-session.cjs` (Git blob `e3fe55b30e294248474dc27f0621565009473622`). The upstream MIT license is preserved in [LICENSE](LICENSE).
+
+ungrok changes: explicit absolute configuration-file argument; validated, whitelisted immutable per-session configuration; no process environment mutation or ambient credential reading; no Grok session authentication fallback; configured model overrides host-selected models; HTTPS except loopback HTTP; no endpoint credentials/query/fragment; no debug dump; sanitized HTTP errors and origin-only endpoint logs; no standalone network smoke test. AsyncLocalStorage isolates configuration across concurrent sessions. Configuration edits apply to new sessions, not already-created sessions.
+
+## Boundaries
+
+- This adapter implements OpenAI Chat Completions with SSE, not native Anthropic Messages or OpenAI Responses. A compatible proxy may be necessary.
+- It preserves upstream tool conversion and context trimming. Long messages/tool results can be clipped and older context dropped to character budgets. This is not token-exact accounting.
+- Unlike upstream's whole-response buffering, stream events are delivered as they arrive. Returning the stream iterator cancels its HTTP request, including when a read is pending. Explicit `ctx.signal` / `ctx.abortSignal` and fourth-argument signal fields are supported; other private host cancellation interfaces remain unverified.
+- Request timeout and total deadline are five minutes. Wire responses are capped at 8 MiB, individual SSE lines at 1 MiB, serialized requests at 16 MiB, and private configuration files at 64 KiB. Character-budget settings are capped at two million and requested output tokens at 131,072. A lagging stream consumer is limited to 10,000 queued events before cancellation. These ceilings limit memory growth; they do not guarantee a model can accept those sizes. Redirects are not followed. There is no automatic retry, billing verification, or endpoint/model capability certification.
+- HTTPS validation does not establish that a provider is trustworthy. Configuring an endpoint authorizes sending conversation, images, and tool context to that endpoint. Loopback services can themselves forward data elsewhere.
+- Current host compatibility still depends on the host hook and private session interface. Passing offline tests does not prove compatibility with a future Grok Bot update.

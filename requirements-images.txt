@@ -1,0 +1,2 @@
+# Optional: request-only resizing of large inline images. No need for text-only use.
+Pillow==12.3.0

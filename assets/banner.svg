@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="title desc">
+  <title id="title">ungrok</title>
+  <desc id="desc">Your bots. Your model. An unofficial provider mod for Grok Bot.</desc>
+  <rect width="1280" height="420" rx="24" fill="#151619"/>
+  <path d="M1020 76v84c0 44 32 74 74 74s74-30 74-74V76" fill="none" stroke="#f58050" stroke-width="28" stroke-linecap="round"/>
+  <path d="M1094 246v61m-27 0h54" fill="none" stroke="#f58050" stroke-width="20" stroke-linecap="round"/>
+  <path d="M989 84h-28m235 0h-28" stroke="#f4f0e7" stroke-width="10" stroke-linecap="round"/>
+  <text x="76" y="176" fill="#f4f0e7" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="112" font-weight="700" letter-spacing="-7">ungrok<tspan fill="#f58050">_</tspan></text>
+  <text x="80" y="252" fill="#f4f0e7" font-family="Arial,Helvetica,sans-serif" font-size="42" font-weight="500">Your bots. Your model.</text>
+  <text x="82" y="340" fill="#a6a6ad" font-family="ui-monospace,Consolas,monospace" font-size="20">an unofficial provider mod for Grok Bot</text>
+</svg>

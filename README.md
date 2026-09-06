@@ -14,7 +14,7 @@ ungrok is an unofficial, reversible host mod. It adds a custom inference adapter
 
 [Get started](docs/getting-started.md) · [After an update](docs/updates.md) · [Compatibility](docs/compatibility.md) · [Troubleshooting](docs/troubleshooting.md)
 
-> **v0.1.0-rc.1 prerelease.** The legacy compatibility repair has narrow live text, follow-up, and image results. The new installer and hardened adapter have automated tests, but their complete live setup/restart/repair/rollback path remains unverified. This relies on private host internals. Use a computer you can afford to recover, and read the [evidence boundary](docs/compatibility.md).
+> **v0.1.0-rc.2 prerelease.** The legacy compatibility repair has narrow live text, follow-up, and image results. The new installer and hardened adapter have automated tests, but their complete live setup/restart/repair/rollback path remains unverified. This relies on private host internals. Use a computer you can afford to recover, and read the [evidence boundary](docs/compatibility.md).
 
 ## Why ungrok?
 
@@ -44,64 +44,41 @@ The change is on the **remote computer shared by your bots**. The Mac app is unt
 
 ## Quick start
 
-You need a working Grok Bot computer, Git, Python 3.10+, the host's Node runtime, and an authorized **OpenAI-compatible Chat Completions endpoint with SSE streaming and tool calls**. ungrok does not provide model access or install a proxy.
+Start with the **Grok Bot app** and an account with a service that provides the model you want. You don't need to know what an endpoint, SSE, or tool calling means.
 
-**Run this inside Grok Bot → Computer → Terminal. Not in Terminal on your Mac.**
+### Let your AI assistant help
 
-```sh
-git clone --branch v0.1.0-rc.1 --single-branch https://github.com/abhaysudhir/ungrok.git
-cd ungrok
-git rev-parse HEAD
+Paste this into a coding assistant that can use a terminal or help you operate the app:
+
+```text
+Help me set up ungrok: https://github.com/abhaysudhir/ungrok
+Read its README and docs/agent-setup.md first. Start from my Grok Bot app.
+Ask which model I want and help me choose the simplest supported provider.
+Explain any separate API charges before I sign up or pay. Don't ask me to
+paste API keys into this chat. Check the correct computer, back up before
+changes, and verify a real bot reply before calling setup complete.
 ```
 
-This selects the `v0.1.0-rc.1` tag. Compare its commit with [the release notes](https://github.com/abhaysudhir/ungrok/releases/tag/v0.1.0-rc.1), review the code, and keep that checkout for recovery. A clone of `main` is a development snapshot, not a stable release. If the candidate is not published yet, stop rather than substituting `main`.
+The assistant can guide setup and run checks where it has access. You'll still handle account sign-in, private keys, any payments, and approvals. A chat-only assistant can walk you through the steps but cannot control your computer. [Full copy-paste setup prompt →](docs/agent-setup.md)
 
-```sh
-./ungrok doctor
-```
+### Do it yourself
 
-On a first install, `doctor` should report a known insertion point and missing configuration. If it reports an unknown host layout or an existing provider patch, stop and read [compatibility](docs/compatibility.md).
+1. **Open Grok Bot and sign in.** Finish the app's normal onboarding. Select or create a bot and open its **Computer** view. If it is starting or reconnecting, wait for it to become available. ungrok cannot create a Grok computer for you or fix an unavailable account.
+2. **Choose your model service.** The simplest documented route is OpenRouter: create an account, get an API key, and pick a model that can use tools and read images if you need them. **No proxy installation is needed for this route.** API usage is billed separately from a ChatGPT or Claude chat subscription. [Choose a provider and get the three setup values →](docs/providers.md)
+3. **Open Terminal inside Grok Bot's Computer view.** Grok Bot runs its bots on a remote Linux computer. That's where ungrok belongs, not in your Mac's Terminal. [The walkthrough checks this before changing anything →](docs/getting-started.md)
+4. **Install, test, and restart using the walkthrough.** It explains each command, saves a backup, and checks a real bot request. Setup affects all bots sharing that computer.
 
-Read the code, finish active bot work, and pause routines where possible. Then:
+[Start the step-by-step walkthrough →](docs/getting-started.md)
 
-```sh
-./ungrok setup
-```
+Already paying for API access directly from a provider? You may be able to use it directly, or need a small translator called a **proxy**. The [provider guide](docs/providers.md) explains both and includes installation steps for the optional proxy.
 
-Enter your endpoint's base URL, exact model ID, and key at the prompts. Setup saves a private config, checks JavaScript syntax, backs up the current host, and installs the hook. **It does not restart anything.**
+## Technical compatibility, if you need it
 
-```sh
-./ungrok probe
-```
+An **endpoint** is the web address where ungrok sends requests. **Streaming** means replies arrive as they are written. **Tool calls** let the model ask Grok Bot to do things such as read a file. Your provider needs to support those features; the setup guide helps you choose and test it.
 
-Stop if the probe fails. After it passes:
+The adapter uses the OpenAI Chat Completions format. It does not directly accept native Anthropic Messages or OpenAI Responses endpoints. Native providers may need a translating proxy. A model catalog listing does not prove tools, images, or streaming work in Grok Bot; test them during setup. [Technical limits and evidence →](docs/compatibility.md)
 
-```sh
-pgrep -af 'host-main.cjs'
-./ungrok restart --pid HOST_PID --yes
-```
-
-Replace `HOST_PID` with the numeric PID you just verified. `probe` sends one synthetic prompt and may incur provider usage. The restart command verifies the host and its supervisor before signaling it.
-
-Finally, send this to an idle bot:
-
-> Diagnostic routing check: reply exactly UNGROK_OK. Do not use tools or message other bots.
-
-Check both the reply **and fresh `[ungrok] session` log lines** showing your intended model and endpoint. A reply alone is not proof of routing. [Full setup and verification →](docs/getting-started.md)
-
-For large inline images, install the pinned optional Pillow dependency with `python3 -m pip install -r requirements-images.txt` in the host's Python environment. The adapter downsamples request copies; it does not change original image files or accelerate the desktop app's attachment upload. [Image limits →](docs/compatibility.md#inline-images)
-
-## Pick an endpoint, not a logo
-
-| Endpoint type | v0.1 expectation |
-| --- | --- |
-| Authorized OpenAI-compatible API or gateway | Configurable. Must support Chat Completions, SSE, and tool calls; live compatibility depends on the endpoint and model. |
-| Proxy already running on the Grok computer | Loopback HTTP is allowed. You manage its installation, authentication, and uptime. |
-| Native Anthropic Messages API | Not directly compatible. Requires an authorized translating gateway. |
-| Model running on your laptop | `localhost` on the Grok computer is **not your laptop**. You need a secure reachable endpoint. |
-| Claude subscription login | Not offered by ungrok. Use provider-authorized API access; see [Anthropic's credential policy](https://code.claude.com/docs/en/legal-and-compliance). |
-
-We don't list a provider as supported just because it accepts a text prompt. Tool handling, long conversations, images, and host behavior need separate tests. See the [compatibility record](docs/compatibility.md).
+For large images, the walkthrough includes the optional Pillow dependency. It shrinks copies sent to the model after upload, not the original photos or the Mac-to-Grok upload.
 
 ## After a computer update
 

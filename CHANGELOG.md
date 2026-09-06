@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-rc.2 (prerelease)
+
+- Start onboarding from the Grok Bot app and explain its remote computer in plain language.
+- Add a copy-paste coding-assistant setup guide with private credential entry and verification steps.
+- Add a no-proxy OpenRouter walkthrough and an optional, supervised LiteLLM proxy setup for Anthropic API access.
+- Explain setup values, separate API billing, and technical terms; make terminal prompts clearer.
+- Keep the same installer and adapter behavior as rc.1. The proxy recipe is documented from official sources, not claimed as live end-to-end verified.
+
 ## 0.1.0-rc.1 (prerelease)
 
 - Add a standard-library CLI with `doctor`, interactive `setup`, `repair`, `probe`, supervised `restart`, and hash-checked `rollback`.

@@ -1,6 +1,6 @@
 # Compatibility and evidence
 
-ungrok **v0.1.0-rc.1 is a prerelease**. Its patch relies on private host internals. The legacy compatibility repair has narrow live results, but the new installer's complete setup/restart/repair/rollback path and hardened adapter still need their own live verification. Passing tests does not establish stable support.
+ungrok **v0.1.0-rc.2 is a prerelease**. Its patch relies on private host internals. The legacy compatibility repair has narrow live results, but the new installer's complete setup/restart/repair/rollback path and hardened adapter still need their own live verification. Passing tests does not establish stable support.
 
 ## Known image incident
 

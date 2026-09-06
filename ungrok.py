@@ -21,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.1.0-rc.1"
+VERSION = "0.1.0-rc.2"
 ROOT = Path(__file__).resolve().parent
 BEGIN = "      // ungrok:begin v1"
 END = "      // ungrok:end v1"
@@ -537,9 +537,10 @@ def main(argv=None):
                 if not sys.stdin.isatty():
                     raise Failure("Interactive setup needs a terminal. Or use --config /private/provider.env --yes.")
                 print("All bots sharing this computer will send prompts and tool output to the endpoint you choose.")
-                print("Use an authorized OpenAI-compatible API endpoint. No subscription logins are imported.")
-                values = validate_config({"SAND_XAI_BASE_URL": input("Base URL, including /v1 if required: ").strip(),
-                                          "SAND_XAI_MODEL": input("Provider model ID: ").strip(),
+                print("Need a model account or key? Read docs/providers.md. OpenRouter needs no local proxy.")
+                print("API usage is billed separately from chat subscriptions. Enter keys here, never in chat.")
+                values = validate_config({"SAND_XAI_BASE_URL": input("Server address (base URL from the provider guide): ").strip(),
+                                          "SAND_XAI_MODEL": input("Model ID (copy the exact ID from your provider): ").strip(),
                                           "XAI_API_KEY": getpass.getpass("API key or local proxy key, hidden: ")})
             installation.install(values, confirmation(args.yes))
         elif args.command == "repair":

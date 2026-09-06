@@ -1,13 +1,27 @@
 # Set up ungrok
 
-ungrok is an alpha host patch for people comfortable recovering a remote Linux process. Read the [compatibility limits](compatibility.md) before changing a computer you rely on.
+This guide starts with the Grok Bot app. You don't need a proxy already installed. ungrok is still experimental, so keep the backup and stop if a check fails. [Prefer help from your AI assistant? Copy this prompt.](agent-setup.md)
 
-## What you need
+## Start here
+
+Open Grok Bot and sign in. Complete its normal onboarding, select or create a bot, and open **Computer**. Wait for the computer to start and connect. If you cannot open it, resolve that in the app first; ungrok cannot replace the app's account or computer setup. Do not use Reset to prepare for ungrok.
+
+The app is a window into a remote Linux computer shared by your bots. You don't need a second physical computer or a server you set up yourself. The installer runs inside the computer the app already provides.
+
+Next, [choose a model service](providers.md). The simplest documented route uses OpenRouter without installing a proxy. The provider guide shows how to get the three things setup asks for:
+
+- **Server address**, also called the base URL. The guide gives you this.
+- **Model ID**, the provider's exact name for the model you choose.
+- **API key**, a private password-like string from that service. Enter it only in the hidden terminal prompt, not in chat.
+
+Model API usage costs extra unless your provider explicitly says otherwise. A normal Claude or ChatGPT subscription is not an API key. You also keep any Grok Bot charges. Don't buy credit until you understand the pricing and this project's experimental status.
+
+## What the walkthrough checks
 
 - A working Grok Bot account with access to **Computer → Terminal**.
 - Permission to change the shared remote host. Every bot on that computer can be affected.
 - Git and Python 3.10 or newer to download and run ungrok, plus the host's Node.js runtime.
-- An authorized OpenAI-compatible **Chat Completions** endpoint, its exact model ID, and a nonempty API or local proxy key. The endpoint must support streamed responses and tool calls.
+- The server address, model ID, and API key from the [provider guide](providers.md). Choose a model with tools, plus image support if you send screenshots or photos.
 - Time to pause bot work, apply the patch, and check a real request.
 
 Large inline images also need Pillow in the host's `python3` environment. Text-only use does not need Pillow; install it after downloading and reviewing the source below.
@@ -33,12 +47,12 @@ Run as the host file's owner, without `sudo`. Host, data, and state paths must b
 ## 2. Download and inspect
 
 ```sh
-git clone --branch v0.1.0-rc.1 --single-branch https://github.com/abhaysudhir/ungrok.git
+git clone --branch v0.1.0-rc.2 --single-branch https://github.com/abhaysudhir/ungrok.git
 cd ungrok
 git rev-parse HEAD
 ```
 
-These commands select `v0.1.0-rc.1`. Compare the printed commit with [the release notes](https://github.com/abhaysudhir/ungrok/releases/tag/v0.1.0-rc.1) and inspect the source before continuing. If the tag is not published yet, stop rather than substituting the moving `main` branch.
+These commands select `v0.1.0-rc.2`. Compare the printed commit with [the release notes](https://github.com/abhaysudhir/ungrok/releases/tag/v0.1.0-rc.2) and inspect the source before continuing. If the tag is not published yet, stop rather than substituting the moving `main` branch.
 
 ```sh
 ./ungrok --help

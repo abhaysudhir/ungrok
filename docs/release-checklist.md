@@ -1,6 +1,6 @@
 # Release gates
 
-## v0.1.0-rc.1
+## v0.1.0-rc.2
 
 - [x] Installer, adapter, and onboarding reviewed separately.
 - [x] Confirmation races and backup/manifest validation covered by regression tests.

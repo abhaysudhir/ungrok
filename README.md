@@ -8,6 +8,8 @@ Use Claude or ChatGPT inside Grok Bot through the official Claude Code or Codex 
 
 > **Early access:** Fresh-install testing is still pending, and Claude tool-result follow-up remains unverified. [Test results and supported versions](docs/compatibility.md)
 
+**Grok Bot version:** Earlier live compatibility tests used desktop **0.43.0**. Those tests covered the previous integration; the current subscription-based installer has not yet been verified end to end on a Grok Bot version. [Version details](docs/compatibility.md#grok-bot-version)
+
 ## Getting Started
 
 ### 1. Check what you need
@@ -24,7 +26,7 @@ Start with Grok Bot below, or expand the manual instructions if you prefer to ru
 
 #### Option A: Have Grok Bot Install It
 
-Paste this into a **Grok Bot chat**. It will guide setup on its own computer, stopping for your sign-in and approval. This uses some Grok Bot allowance; the amount has not been measured.
+Paste this into a **Grok Bot chat**. It will guide setup on its own computer, stopping for your sign-in and approval. This uses some Grok Bot allowance.
 
 **Experimental:** this bot-led installation flow has not yet passed a clean-computer test.
 
@@ -53,8 +55,15 @@ documented release and its matching instructions.
 
 When I return and say "continue setup," inspect the current state.
 Verify a fresh response uses my chosen provider, then test a harmless
-tool task and a small image. Report each result separately. Do not
-call setup complete while required checks remain unverified.
+tool task, its result/follow-up, a small image, and an image follow-up.
+Only if all checks pass, end with:
+"Setup complete — ungrok is working with [verified provider]."
+Show the configured model, or "client default" if no model was selected,
+and mark each verified check PASS. Tell me I can use the tested features
+in Grok Bot and that the setting applies to all bots on this computer.
+If any check fails or cannot be verified, say "Setup incomplete," list
+what passed, and give the exact remaining issue and next step. Never
+show the success message based only on login, a probe, or a restart.
 ```
 
 You'll complete official sign-in yourself. For the restart handoff, click **Computer in Grok Bot's top-right corner**, open **Terminal inside that remote computer**, and run the command the bot gives you. After reconnection, return to the chat and say **continue setup**. Do not run the restart command in your Mac's terminal.
@@ -190,9 +199,25 @@ After either installation option, send an idle bot this message:
 
 Check the fresh host logs for `[ungrok] native session provider=... model=...` matching your selected provider. A reply alone does not prove the integration handled it. If you cannot locate that evidence, ask for [setup help](https://github.com/abhaysudhir/ungrok/discussions) rather than assuming success; never post full logs or credentials.
 
-Next, try a harmless tool task, such as asking for the names in an empty test folder, and attach a small test image with an obvious answer. You can do these checks yourself or ask your assistant to help. Keep important routines paused until the checks pass. See [verification details](docs/getting-started.md#6-verify-in-the-app) if anything fails.
+Next, try a harmless tool task, such as asking for the names in an empty test folder, and confirm the bot can explain the returned result in a follow-up. Attach a small test image with an obvious answer, then ask a follow-up about it. You can do these checks yourself or have Grok Bot help. Keep important routines paused until the checks pass. See [verification details](docs/getting-started.md#6-verify-in-the-app) if anything fails.
 
-Then use your bots in the same app. The provider and model setting applies to **all bots on that shared computer**.
+**How you know it worked:** all five checks below pass. For the bot-led installation, Grok Bot should finish with this report, filled in from actual results:
+
+```text
+Setup complete — ungrok is working with [verified provider].
+Model: [configured model, or "client default"]
+
+PASS — A new message used the selected provider.
+PASS — A harmless Grok tool task returned the expected result.
+PASS — The bot correctly handled the tool result in a follow-up.
+PASS — The bot correctly read the test image.
+PASS — The bot correctly answered an image follow-up.
+
+You can now use these tested features in Grok Bot.
+This provider/model setting applies to all bots on this computer.
+```
+
+For manual installation, use the same checklist. If any item fails or is unchecked, **setup is incomplete**. A successful sign-in, probe, or restart alone is not enough. Ask for help with the specific failed check instead of assuming it worked. These checks do not certify every routine, voice feature, or billing path.
 
 ## Before you use it
 

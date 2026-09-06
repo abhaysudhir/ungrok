@@ -55,9 +55,23 @@ restart command refuses, stop and recheck rather than bypassing it.
 Never kill generic Node processes or start a duplicate host.
 
 Verify a real app text diagnostic with fresh native-route evidence. With
-approval, test a harmless Grok-host tool and synthetic image. Ensure the native
+approval, test a harmless Grok-host tool, its result/follow-up, a synthetic
+image, and an image follow-up. Ensure the native
 client did not execute independent tools. Mark unavailable/failed paths
 unverified. Login, ping, probe, or a reply alone is not setup proof.
+
+End with an unmistakable result. Only after all five checks pass, say:
+"Setup complete — ungrok is working with [verified provider]."
+Show the configured model, or "client default" if none was selected, and
+one PASS line for each check. Say these tested features are ready to use
+and the setting affects all bots on this computer. Do not infer an actual
+model identifier from an unspecified client default. Do not claim every
+routine, voice feature, or billing path has been tested or resume routines
+without approval.
+
+If any check fails or cannot be verified, say "Setup incomplete." List
+what passed, the exact remaining issue, and the next safe step. Never
+print the success report as though it were a result before running checks.
 
 Report commit, changes, private backup location, actual tests, and gaps without
 secrets. Ask before exact-version hash-checked rollback, restart separately

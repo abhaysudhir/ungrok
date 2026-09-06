@@ -2,6 +2,14 @@
 
 **0.2.0-alpha.1 implements both native subscription paths. Linux Grok Bot host end-to-end verification is pending.** Real local native probes have passed with the exact clients below. Old adapter results do not certify this version.
 
+## Grok Bot version
+
+The recorded desktop client version for earlier live compatibility work was **Grok Bot 0.43.0**, on **September 5, 2026**. This includes the historical post-update repair context. See the [archived test record](https://github.com/abhaysudhir/ungrok/blob/v0.1.0-rc.2/docs/compatibility.md#test-status).
+
+Those results apply to the previous integration, not the current native-subscription installer or bot-led setup. **No Grok Bot version is yet certified by a complete live test of the current setup path.** The desktop version also does not identify the separately updated remote host bundle; future reports must record both the app version and host compatibility evidence.
+
+## Current integration checks
+
 | Path | Evidence boundary |
 | --- | --- |
 | Claude through official Claude Code 2.1.263 | Four of five real local checks passed: text, synthetic tool proposal, two binary images, and image follow-up. Tool-result follow-up was refused by provider safeguards and remains incomplete. Pro/Max auth required. |

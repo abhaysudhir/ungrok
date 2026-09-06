@@ -16,36 +16,48 @@ Use Claude or ChatGPT inside Grok Bot through the official Claude Code or Codex 
 - **Your own Claude or ChatGPT subscription.** Claude requires Pro or Max; ChatGPT needs subscription access supported by the pinned Codex client. [Supported clients and sign-in](docs/providers.md)
 - **Access to Grok Bot's remote computer**, which you own or are authorized to modify. Setup happens there, not in your Mac's terminal.
 
-**To open the right terminal:**
-
-1. Open the Grok Bot app.
-2. Click **Computer** in the **top-right corner**.
-3. Once the remote computer opens, open **Terminal inside that computer**.
-4. Run the installation commands in that terminal. Leave your Mac's own Terminal app closed for this setup.
-
-The remote computer needs Python 3.10+, Git, Node/npm, and Pillow for large-image resizing. You or your assistant will check these before installing.
+The remote computer needs Python 3.10+, Git, Node/npm, and Pillow for large-image resizing. Grok Bot can check these for you, or you can check them during manual installation.
 
 ### 2. Install ungrok
 
-Choose either option below. Both install the same integration.
+Start with Grok Bot below, or expand the manual instructions if you prefer to run the commands yourself.
 
-#### Option A: Install with your AI
+#### Option A: Have Grok Bot Install It
 
-Paste this into your coding assistant:
+Paste this into a **Grok Bot chat**. It will guide setup on its own computer, stopping for your sign-in and approval. This uses some Grok Bot allowance; the amount has not been measured.
+
+**Experimental:** this bot-led installation flow has not yet passed a clean-computer test.
 
 ```text
-Help me install ungrok: https://github.com/abhaysudhir/ungrok
+Help me install ungrok on this Grok Bot computer:
+https://github.com/abhaysudhir/ungrok
 
-Read docs/agent-setup.md and follow the documented release instructions.
-Ask whether I want Claude or ChatGPT, then check the prerequisites on
-my Grok Bot remote computer. If you cannot access it, guide me one step
-at a time. Ask before making changes, have me pause bots and routines,
-and let me complete official sign-in myself. Verify the setup in the
-app and report anything that remains untested. Never request my tokens
-or bypass safety checks.
+Read the README, docs/agent-setup.md, and SECURITY.md first. Use the
+documented release and its matching instructions.
+
+1. Ask whether I want Claude or ChatGPT. Check prerequisites and any
+   existing installation. Stop on unsupported layouts or conflicts.
+2. Explain what needs installing and ask for approval. Use the pinned
+   official clients. Never use sudo, overwrite an unknown installation,
+   extract tokens, or bypass safety checks.
+3. Guide official subscription sign-in. Let me enter credentials myself;
+   never request passwords or tokens in chat.
+4. Before changing the shared host, ask me to pause other bots and
+   routines. Explain that all bots are affected. Preserve the backup
+   and save a credential-free recovery note with the release,
+   installation folder, and completed steps before applying changes.
+5. Apply the configuration and run the documented checks with my
+   approval. Stop on failure and explain what changed.
+6. Do not restart your own host. Give me the exact restart command for
+   the verified host process, tell me where to run it, and wait.
+
+When I return and say "continue setup," inspect the current state.
+Verify a fresh response uses my chosen provider, then test a harmless
+tool task and a small image. Report each result separately. Do not
+call setup complete while required checks remain unverified.
 ```
 
-The assistant needs remote Computer terminal access to carry out the installation. Otherwise, it can walk you through it. You'll choose your provider, complete sign-in, and approve changes and restart.
+You'll complete official sign-in yourself. For the restart handoff, click **Computer in Grok Bot's top-right corner**, open **Terminal inside that remote computer**, and run the command the bot gives you. After reconnection, return to the chat and say **continue setup**. Do not run the restart command in your Mac's terminal.
 
 #### Option B: Install it yourself
 
@@ -53,6 +65,13 @@ The assistant needs remote Computer terminal access to carry out the installatio
 <summary>Open the step-by-step terminal instructions</summary>
 
 These commands use the published **v0.2.0-alpha.1** release. In Grok Bot, click **Computer in the top-right corner**, then open **Terminal inside the remote computer**. Run one block at a time there. Stop if a command fails. Do not run these commands in your Mac's terminal or use sudo.
+
+To open the right terminal:
+
+1. Open the Grok Bot app.
+2. Click **Computer** in the **top-right corner**.
+3. Once the remote computer opens, open **Terminal inside that computer**.
+4. Run the commands below in that terminal, not your Mac's Terminal app.
 
 **1. Check the computer.**
 

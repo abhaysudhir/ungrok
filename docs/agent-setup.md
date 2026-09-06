@@ -1,8 +1,10 @@
-# Ask an assistant to help
+# Install with Grok Bot
 
-Copy this into a capable coding assistant. It needs access to Grok Bot's **remote Computer terminal**, not just your Mac. Complete sign-in yourself; never paste credentials into chat.
+Start with the copy-paste prompt in the [README](../README.md#option-a-have-grok-bot-install-it). Paste it directly into a Grok Bot chat. The bot has access to its remote computer; you complete official sign-in and the restart handoff yourself. This flow is experimental and has not passed a clean-computer test. Usage has not been measured.
 
-The unreleased working source has a [guided `./ungrok start` flow](easy-setup.md). When using that reviewed source, prefer the guide for a person at the terminal. Do not attempt to run it from the published alpha archive. Keep the verification and consent requirements below; the guide does not prove app routing or tools work.
+The detailed instructions below also work as a checklist for an external coding assistant with authorized remote terminal access. They do not authorize a bot to restart the host running its own conversation.
+
+The unreleased working source has a [guided `./ungrok start` flow](easy-setup.md) for a person at the terminal. It is not an unattended bot installer and is not in the published alpha archive. For the bot-led flow, follow the published release's individual commands and the handoff below.
 
 ```text
 Help me set up ungrok 0.2.0-alpha.1 with my Claude or ChatGPT subscription only.
@@ -34,14 +36,22 @@ subscription auth through the client. A successful login does not authorize
 bypassing exact-version, auth, managed-policy, or tool-isolation checks.
 
 Explain shared-host scope and provider data exposure; obtain consent before
-setup. Have me finish bot work and pause routines before any configuration
+setup. Have me finish other bot work and pause routines before any configuration
 write: on an existing installation, new sessions can pick up changed settings
 before a restart. Configure only provider, executable path, optional model. Preserve the
-fresh backup. No alternative billing fallback is allowed.
+fresh backup. Before applying changes, save a credential-free recovery note
+with the exact release/commit, checkout path, completed steps, and backup
+location. No alternative billing fallback is allowed.
 
 Run the synthetic probe after confirming quota use. Stop on failure. Before
 restart, have me finish work and pause routines; obtain interruption approval.
-Verify the exact host PID/supervisor and use the documented restart command.
+If you are the bot running on this host, DO NOT restart it yourself. Verify
+the exact host PID/supervisor, then give me the documented restart command
+with the real PID and checkout path. Tell me to click Computer at the top
+right of Grok Bot, open Terminal inside that remote computer, and run it
+there. Wait for me to return and say "continue setup." Reinspect the actual
+state before continuing; a saved note is not proof of completion. If the
+restart command refuses, stop and recheck rather than bypassing it.
 Never kill generic Node processes or start a duplicate host.
 
 Verify a real app text diagnostic with fresh native-route evidence. With

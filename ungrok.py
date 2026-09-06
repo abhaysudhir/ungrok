@@ -34,6 +34,10 @@ CALL = "      const session = createCursorInferencePromptSession({"
 KEYS = {"UNGROK_PROVIDER", "UNGROK_MODEL", "UNGROK_CLI"}
 RUNTIME_TIMEOUTS = {"status": 45, "probe": 210}
 RUNTIME_STOP_GRACE = 5
+CLIENTS = {
+    "claude": ("@anthropic-ai/claude-code", "2.1.263", "claude", "2.1.263 (Claude Code)"),
+    "chatgpt": ("@openai/codex", "0.153.4", "codex", "codex-cli 0.153.4"),
+}
 
 
 class Failure(Exception):
@@ -314,7 +318,7 @@ class Installation:
         watched = (self.adapter, self.image_helper, self.subscription_helper, self.codex_helper, self.config, self.manifest)
         before = {path: (read_regular(path), stat.S_IMODE(path.stat().st_mode))
                   if path.exists() or path.is_symlink() else None for path in watched}
-        confirm("This changes the shared host for ALL bots. Prompts and tool results use your native subscription CLI. Continue?")
+        confirm("This changes the shared host for ALL bots. If ungrok is already running, saved provider/model changes can affect new sessions immediately, before restart. Prompts and tool results use your native subscription CLI. Have all bot work finished and scheduled routines been paused, and may setup continue?")
         secure_dir(self.state_dir)
         with self.lock():
             if read_regular(self.host) != original:
@@ -405,8 +409,9 @@ class Installation:
         else:
             raise Failure("No ungrok provider configuration. Run setup. No network request was made.")
         print("Read-only check. Provider access and live app routing are NOT verified.")
-        image_runtime = subprocess.run([sys.executable, "-c", "import PIL"], capture_output=True, timeout=10)
-        print("Pillow available for image resizing." if image_runtime.returncode == 0 else
+        image_python = shutil.which("python3")
+        image_runtime = subprocess.run([image_python, "-c", "import PIL"], capture_output=True, timeout=10) if image_python else None
+        print("Pillow available for image resizing." if image_runtime is not None and image_runtime.returncode == 0 else
               "Pillow is missing: large inline images will fail. See optional image setup in docs/getting-started.md.")
         if BEGIN.encode() not in original:
             raise Failure("Run setup or repair before restarting the host.")
@@ -593,6 +598,161 @@ def confirmation(yes):
     return ask
 
 
+def wizard_yes(message):
+    return input(message + " [y/N] ").strip().lower() in {"y", "yes"}
+
+
+def wizard_confirm(message):
+    if not wizard_yes(message):
+        raise Failure("Stopped at your request. Earlier completed steps are retained; run ./ungrok start to continue.")
+
+
+def wizard_choice(message, choices, default):
+    while True:
+        answer = input(message + f" [{default}]: ").strip().lower() or default
+        if answer in choices:
+            return choices[answer]
+        print("Choose " + ", ".join(choices) + ".")
+
+
+def validated_client(provider, candidate):
+    """Check npm package identity and exact executable version, without login."""
+    package, version, _, expected = CLIENTS[provider]
+    try:
+        executable = resolve_cli(provider, candidate)
+        resolved = Path(executable).resolve(strict=True)
+        matched = False
+        for parent in resolved.parents:
+            manifest = parent / "package.json"
+            if manifest.is_file() and manifest.stat().st_size < 65536:
+                metadata = json.loads(read_regular(manifest))
+                if isinstance(metadata, dict) and metadata.get("name") == package and metadata.get("version") == version:
+                    matched = True
+                    break
+        if not matched:
+            return None
+        result = subprocess.run([executable, "--version"], env=native_env(),
+                                capture_output=True, timeout=20)
+        if result.returncode == 0 and result.stdout.decode().strip() == expected:
+            return executable
+    except (Failure, OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def wizard_client(provider, saved=None):
+    package, version, command, _ = CLIENTS[provider]
+    candidates = [saved, shutil.which(command)]
+    base = Path.home() / ".local/share/ungrok/wizard-clients"
+    if base.is_dir() and base.resolve() == base and base.stat().st_uid == os.getuid() and not base.stat().st_mode & 0o077:
+        # Resume a prior completed download without trusting partial directories.
+        previous = sorted(base.glob(f"{command}-{version}-*"), reverse=True)[:20]
+        for prefix in previous:
+            if prefix.is_dir() and not prefix.is_symlink() and prefix.stat().st_uid == os.getuid() and not prefix.stat().st_mode & 0o077:
+                candidates.append(prefix / "node_modules/.bin" / command)
+    for candidate in dict.fromkeys(item for item in candidates if item):
+        executable = validated_client(provider, candidate)
+        if executable:
+            print(f"Found compatible {command} {version}.")
+            return executable
+    npm = shutil.which("npm")
+    if not npm:
+        raise Failure("npm is missing on this remote computer. Ask your setup helper to install a user-local Node/npm runtime using docs/providers.md, then run ./ungrok start again. Do not use sudo or replace Grok's Node runtime.")
+    wizard_confirm(f"Download official {package}@{version} and its platform dependencies from registry.npmjs.org into a new private user-local folder? No sudo, global install, or package scripts will be used.")
+    if base.resolve() != base:
+        raise Failure("The user-local client directory has symlink components. Ask your setup helper to inspect it; nothing installed.")
+    secure_dir(base)
+    prefix = Path(tempfile.mkdtemp(prefix=f"{command}-{version}-", dir=base))
+    print("Downloading the official client. This can take a few minutes.")
+    env = native_env()
+    env.update(NPM_CONFIG_USERCONFIG="/dev/null", NPM_CONFIG_GLOBALCONFIG="/dev/null")
+    try:
+        result = subprocess.run([npm, "install", "--prefix", str(prefix), "--ignore-scripts",
+                                 "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org",
+                                 f"{package}@{version}"], env=env, cwd=prefix,
+                                capture_output=True, timeout=300)
+    except (OSError, subprocess.SubprocessError):
+        raise Failure(f"Client download did not complete. Partial files remain at {prefix}; they will not be overwritten. Check network access and retry ./ungrok start.") from None
+    executable = validated_client(provider, prefix / "node_modules/.bin" / command) if result.returncode == 0 else None
+    if not executable:
+        raise Failure(f"The downloaded client did not pass its exact-version check. Files remain at {prefix}; nothing was patched. Ask your setup helper to check Linux/Node compatibility in docs/providers.md.")
+    return executable
+
+
+def discover_host_pid(host):
+    matches = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                verified_process(int(entry.name), host)
+                matches.append(int(entry.name))
+            except (Failure, OSError):
+                pass
+    if len(matches) != 1:
+        raise Failure(f"Found {len(matches)} verified Grok host processes; expected exactly one. No process was signaled. Keep this terminal open and ask your setup helper to inspect the host/supervisor, then rerun ./ungrok start.")
+    return matches[0]
+
+
+def start(installation):
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise Failure("Open Grok Bot > Computer > Terminal and run ./ungrok start interactively. Piped or unattended setup is not supported. Nothing changed.")
+    original = installation.preflight()
+    if os.environ.get("CODEX_HOME") or os.environ.get("CLAUDE_CONFIG_DIR"):
+        raise Failure("This terminal uses a custom CODEX_HOME or CLAUDE_CONFIG_DIR. The running Grok host may use a different sign-in profile. Ask your setup helper to align the terminal and supervisor profiles before continuing; nothing changed.")
+    if not installation.is_current(original):
+        patch_bytes(original, installation.config)
+    saved = read_config(installation.config) if installation.config.exists() else {}
+    python = shutil.which("python3")
+    pillow = subprocess.run([python, "-c", "import PIL"], capture_output=True, timeout=10) if python else None
+    if pillow is None or pillow.returncode:
+        print("Image warning: the image helper cannot use Pillow from PATH python3. Most photos/screenshots may fail until your setup helper follows the optional image setup in docs/getting-started.md.")
+    print("ungrok guided setup (experimental). This affects ALL bots on this remote computer.")
+    print("You need your own supported Claude Pro/Max or ChatGPT subscription. Never paste a password, API key, or token here.")
+    default = "2" if saved.get("UNGROK_PROVIDER") == "claude" else "1"
+    provider = wizard_choice("Choose 1 = ChatGPT, 2 = Claude", {"1": "chatgpt", "2": "claude"}, default)
+    model = saved.get("UNGROK_MODEL") if saved.get("UNGROK_PROVIDER") == provider else None
+    print(f"Model: {model or 'official client default'}. Available models depend on your account.")
+    selection = wizard_choice("Choose 1 = keep this setting, 2 = client default, 3 = custom model", {"1": "keep", "2": "default", "3": "custom"}, "1")
+    if selection == "default":
+        model = None
+    elif selection == "custom":
+        model = input("Enter an exact model name supported by your official client: ").strip()
+        if not model:
+            raise Failure("No model name entered. Run ./ungrok start again to choose the client default.")
+    # Validate user input before downloads or login.
+    values = {"UNGROK_PROVIDER": provider, "UNGROK_CLI": "/pending/client"}
+    if model:
+        values["UNGROK_MODEL"] = model
+    validate_config(values)
+    values["UNGROK_CLI"] = wizard_client(provider, saved.get("UNGROK_CLI") if saved.get("UNGROK_PROVIDER") == provider else None)
+    try:
+        runtime_check(values, "status", installation.node)
+        print("Existing subscription sign-in verified.")
+    except Failure:
+        wizard_confirm("Subscription sign-in could not be verified. Open the official client's sign-in flow now? Complete it yourself in your browser.")
+        login(provider, values["UNGROK_CLI"], installation.node)
+    wizard_confirm("Run a small test prompt now? This uses a little of your subscription allowance.")
+    try:
+        probe(values, installation.node)
+    except Failure as error:
+        raise Failure(f"{error} This setup attempt has not changed the Grok host. Check your selected model/subscription, then rerun ./ungrok start.") from None
+    pid = discover_host_pid(installation.host)
+    wizard_confirm("Before changing this shared host, finish ALL active bot work and pause scheduled routines. If ungrok is already running, provider/model changes can affect new sessions immediately, before restart. Are all bots idle and routines paused?")
+    installation.install(values, wizard_confirm)
+    print("Settings installed on disk. If ungrok is already running, new sessions may already use these settings before restart. Keep bots idle and routines paused until restart and app verification are complete.")
+    recovery = "Settings are installed on disk. If ungrok is already running, new sessions may already use them; otherwise a later restart can activate them. Keep bots idle and routines paused. Run ./ungrok start to retry, or ./ungrok rollback and follow its restart instructions to restore original routing."
+    try:
+        installation.restart(pid, wizard_confirm)
+    except Failure as error:
+        raise Failure(f"{error} {recovery}") from None
+    except (OSError, subprocess.SubprocessError):
+        raise Failure(f"Restart could not be confirmed. {recovery} Diagnostic contents were withheld.") from None
+    except (KeyboardInterrupt, EOFError):
+        raise Failure(f"Stopped after installation. {recovery}") from None
+    print("Setup and supervised restart completed. Live app routing, tools, and images are NOT yet verified.")
+    print("Return to Grok Bot and send a new message, then test a simple tool task and an image. Have your setup helper check fresh [ungrok] route logs. Do not call setup fully verified until those pass.")
+
+
 def parser():
     home = Path.home()
     result = argparse.ArgumentParser(description="ungrok: bring your Claude or ChatGPT subscription to Grok Bot. Run in its remote Linux terminal.")
@@ -602,6 +762,7 @@ def parser():
     result.add_argument("--state-dir", default=str(home / ".local/state/ungrok"))
     result.add_argument("--node", default="/exec-daemon/node" if Path("/exec-daemon/node").is_file() else shutil.which("node"))
     commands = result.add_subparsers(dest="command", required=True)
+    commands.add_parser("start", help="guided interactive setup, sign-in, test, and confirmed restart")
     commands.add_parser("doctor", help="read-only file/config/layout checks; no network")
     auth = commands.add_parser("login", help="sign in through the official native subscription CLI")
     auth.add_argument("provider", choices=("claude", "chatgpt"))
@@ -626,7 +787,9 @@ def main(argv=None):
     args = parser().parse_args(argv)
     installation = Installation(args)
     try:
-        if args.command == "doctor":
+        if args.command == "start":
+            start(installation)
+        elif args.command == "doctor":
             installation.doctor()
         elif args.command == "login":
             login(args.provider, args.cli, installation.node)

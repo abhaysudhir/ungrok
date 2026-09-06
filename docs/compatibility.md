@@ -16,6 +16,8 @@ Native steps are stateless and buffer the structured response before delivering 
 
 Use a compatible remote Linux host, its owner's account, original Node runtime, and the selected official client. Path overrides cannot make unsupported internals safe.
 
+Terminal probes do not verify the supervised host's environment. The native client may need Node on its execution PATH, and the image helper resolves `python3` from the host's PATH. A dependency installed only in an interactive shell may pass setup checks but fail in the app. Runtime-environment parity remains part of the pending clean-host verification.
+
 Configuration uses `UNGROK_PROVIDER=claude|chatgpt`, absolute `UNGROK_CLI`, and optional `UNGROK_MODEL`. No API credential, endpoint, token import, or fallback route is supported. See [sign-in](providers.md) and [architecture](architecture.md).
 
 ## Images and uploads

@@ -2,6 +2,8 @@
 
 This guide is for **0.2.0-alpha.1**, not the older API-based release. Both native paths are implemented and have passed real local marker probes. Linux Grok host verification is pending. Use exact Claude Code **2.1.263** or Codex **0.153.4**; read [compatibility](compatibility.md) first.
 
+Using the unreleased working source? Try the [guided setup](easy-setup.md) instead. The manual commands below remain available and also describe the published alpha.
+
 ## 1. Confirm the machine
 
 Open **Grok Bot → Computer → Terminal**:
@@ -54,7 +56,7 @@ Finish active bot work and pause routines. Confirm consent to changing the share
 ./ungrok setup --provider claude --cli "$ungrok_clients/node_modules/.bin/claude"
 ```
 
-Setup resolves the native executable or accepts `--cli /absolute/path/to/claude`. Optional `--model MODEL` selects an account-supported alias. Authentication must pass before installation. **Setup does not restart.**
+Setup resolves the native executable or accepts `--cli /absolute/path/to/claude`. Optional `--model MODEL` selects an account-supported alias. Authentication must pass before installation. **Setup does not restart, but an existing ungrok host can use changed settings for new sessions immediately.** Keep work and routines paused before configuration changes and until verification is complete.
 
 For noninteractive configuration, use an owner-only file outside the checkout:
 
@@ -96,6 +98,12 @@ Report each check separately. Mark inaccessible or failed workflows unverified. 
 Global `--host-dir`, `--data-dir`, `--state-dir`, and `--node` overrides belong before the command. Keep the same paths and original checkout for recovery.
 
 ## Optional native adapter check
+
+### Large-image support
+
+Large inline images need Pillow in the Python environment used by the host's image helper. `./ungrok doctor` reports whether it is available. If missing, ask your setup assistant to review `requirements-images.txt` and install it into the appropriate environment with your approval. Do not replace the host Python, bypass environment protections, or use sudo as a workaround. Small-image success does not verify large-image resizing.
+
+### Synthetic subscription check
 
 After native sign-in, this opt-in script tests five synthetic cases without installing or restarting a Grok host. It consumes subscription quota. Replace the executable path with your exact supported official client:
 

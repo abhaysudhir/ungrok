@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased: guided setup
+
+- Add `./ungrok start` for guided provider/model selection, pinned client installation, official sign-in, a subscription probe, and separately approved supervised restart.
+- Keep existing choices on rerun and preserve the manual commands for recovery and advanced use.
+- Explain missing Python before launching the application, without a traceback.
+- Add a short guided setup document and explicit live-test release gates. The published alpha archive does not contain these changes.
+
+The guided flow still requires compatible host prerequisites and final in-app verification. It does not make the unverified Linux workflows or Claude tool-result follow-up verified.
+
 ## 0.2.0-alpha.1 (subscription-only alpha)
 
 - Replace active API-compatible onboarding with subscription sign-in through official Claude Code or Codex clients.

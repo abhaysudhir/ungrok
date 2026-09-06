@@ -2,6 +2,8 @@
 
 Copy this into a capable coding assistant. It needs access to Grok Bot's **remote Computer terminal**, not just your Mac. Complete sign-in yourself; never paste credentials into chat.
 
+The unreleased working source has a [guided `./ungrok start` flow](easy-setup.md). When using that reviewed source, prefer the guide for a person at the terminal. Do not attempt to run it from the published alpha archive. Keep the verification and consent requirements below; the guide does not prove app routing or tools work.
+
 ```text
 Help me set up ungrok 0.2.0-alpha.1 with my Claude or ChatGPT subscription only.
 
@@ -32,7 +34,9 @@ subscription auth through the client. A successful login does not authorize
 bypassing exact-version, auth, managed-policy, or tool-isolation checks.
 
 Explain shared-host scope and provider data exposure; obtain consent before
-setup. Configure only provider, executable path, optional model. Preserve the
+setup. Have me finish bot work and pause routines before any configuration
+write: on an existing installation, new sessions can pick up changed settings
+before a restart. Configure only provider, executable path, optional model. Preserve the
 fresh backup. No alternative billing fallback is allowed.
 
 Run the synthetic probe after confirming quota use. Stop on failure. Before

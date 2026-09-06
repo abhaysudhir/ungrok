@@ -148,6 +148,60 @@ class InstallationTests(unittest.TestCase):
         Path(self.manifest()["backup"]).write_bytes(b"// tampered\n")
         self.assert_refusal_unchanged(lambda: self.installation.rollback(lambda message: None))
 
+    def test_tampered_backup_refuses_repair_and_doctor(self):
+        self.install()
+        Path(self.manifest()["backup"]).write_bytes(b"// corrupted original\n")
+        self.assert_refusal_unchanged(self.install)
+        self.assert_refusal_unchanged(self.installation.doctor)
+
+    def test_malformed_manifest_refuses_cleanly(self):
+        self.install()
+        record = self.manifest()
+        for bad in ([], None, {}, dict(record, backup=12), dict(record, adapter_sha256="bad")):
+            self.installation.manifest.write_text(json.dumps(bad))
+            with self.subTest(type=type(bad).__name__):
+                self.assert_refusal_unchanged(self.install)
+
+    def test_changed_files_during_confirmation_are_preserved(self):
+        self.install()
+        for target in (self.installation.config, self.installation.adapter,
+                       self.installation.image_helper, self.installation.manifest):
+            original = target.read_bytes()
+            changed = original + b"\n"
+            def concurrent_edit(message):
+                target.write_bytes(changed)
+            with self.subTest(target=target.name), self.assertRaisesRegex(cli.Failure, "changed during confirmation"):
+                self.installation.install(VALUES, concurrent_edit)
+            self.assertEqual(target.read_bytes(), changed)
+            target.write_bytes(original)
+
+    def test_missing_image_helper_repairs_and_tampering_refuses(self):
+        self.install()
+        original = self.installation.image_helper.read_bytes()
+        self.installation.image_helper.unlink()
+        self.install()
+        self.assertEqual(self.installation.image_helper.read_bytes(), original)
+        self.installation.image_helper.write_bytes(b"# user modified\n")
+        self.assert_refusal_unchanged(self.install)
+
+    def test_repair_saves_recovery_copies_of_existing_helpers(self):
+        self.install()
+        existing = set(self.state_dir.glob("backup-*"))
+        self.install()
+        new = set(self.state_dir.glob("backup-*")) - existing
+        self.assertEqual(len(new), 1)
+        backup = new.pop()
+        for helper in (self.installation.adapter, self.installation.image_helper):
+            self.assertEqual((backup / helper.name).read_bytes(), helper.read_bytes())
+
+    def test_rollback_then_reinstall_lifecycle(self):
+        self.install()
+        self.installation.rollback(lambda message: None)
+        self.install()
+        self.installation.doctor()
+        self.installation.rollback(lambda message: None)
+        self.assertEqual(self.installation.host.read_bytes(), self.original)
+
     def test_tampered_adapter_refuses_repair(self):
         self.install()
         self.installation.adapter.write_bytes(b"// user changes\n")
@@ -205,6 +259,14 @@ class InstallationTests(unittest.TestCase):
                 self.installation.restart(42, lambda message: None)
             kill.assert_not_called()
 
+    def test_restart_refuses_foreign_hook_without_process_inspection(self):
+        self.installation.host.write_bytes(self.original + b"// createXaiPromptSession foreign hook\n")
+        with mock.patch.object(cli, "verified_process") as process, mock.patch.object(cli.os, "kill") as kill:
+            with self.assertRaises(cli.Failure):
+                self.installation.restart(42, lambda message: None)
+            process.assert_not_called()
+            kill.assert_not_called()
+
     def test_restart_refuses_pid_reused_during_confirmation(self):
         self.install()
         with mock.patch.object(cli, "verified_process", side_effect=[(12, "100"), (12, "101")]), \
@@ -225,7 +287,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_unsafe_urls_refused(self):
         for url in ("http://api.example.com/v1", "ftp://localhost/v1", "https://user:secret@example.com/v1",
                     "https://example.com/v1?key=secret", "https://example.com/v1#fragment", "https://",
-                    "https://example.com:invalid/v1", "https://example.com:99999/v1"):
+                    "https://example.com:invalid/v1", "https://example.com:99999/v1",
+                    "https://bad host.example/v1", "https://example.com/bad path"):
             with self.subTest(url=url), self.assertRaises(cli.Failure):
                 cli.validate_config(dict(VALUES, SAND_XAI_BASE_URL=url))
 
@@ -239,6 +302,16 @@ class ConfigurationTests(unittest.TestCase):
                 cli.validate_config(dict(VALUES, **change))
         with self.assertRaises(cli.Failure):
             cli.validate_config({})
+
+    def test_config_field_and_file_caps(self):
+        with self.assertRaises(cli.Failure):
+            cli.validate_config(dict(VALUES, XAI_API_KEY="a" * 16385))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config"
+            path.write_bytes(b"#" * 65537)
+            path.chmod(0o600)
+            with self.assertRaises(cli.Failure):
+                cli.read_config(path)
 
     def test_private_config_roundtrip_and_invalid_parsing(self):
         with tempfile.TemporaryDirectory() as directory:

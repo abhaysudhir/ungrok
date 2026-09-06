@@ -19,8 +19,8 @@ test("binary images sniff JPEG GIF WebP without assuming PNG", () => {
   }
 });
 test("unknown and MIME-mismatched binary images are not sent as invalid URLs", () => {
-  assert.deepEqual(urls(png, { mimeType: "image/jpeg" }), []);
-  assert.deepEqual(urls(Buffer.from("not an image")), []);
+  assert.throws(() => urls(png, { mimeType: "image/jpeg" }), /message conversion failed/);
+  assert.throws(() => urls(Buffer.from("not an image")), /message conversion failed/);
 });
 test("URL instances survive message-wide unwrap", () => {
   assert.deepEqual(urls(new URL("https://example.com/image.png")), ["https://example.com/image.png"]);
@@ -42,6 +42,6 @@ test("binary image byte cap prevents oversized encoding", () => {
   console.error = () => {};
   try {
     const bytes = new Uint8Array(20 * 1024 * 1024 + 1); bytes.set(png);
-    assert.deepEqual(urls(bytes), []);
+    assert.throws(() => urls(bytes), /message conversion failed/);
   } finally { console.error = old; }
 });

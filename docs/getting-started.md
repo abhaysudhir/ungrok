@@ -10,13 +10,7 @@ ungrok is an alpha host patch for people comfortable recovering a remote Linux p
 - An authorized OpenAI-compatible **Chat Completions** endpoint, its exact model ID, and a nonempty API or local proxy key. The endpoint must support streamed responses and tool calls.
 - Time to pause bot work, apply the patch, and check a real request.
 
-Large inline images also need Pillow in the `python3` environment on the remote computer:
-
-```sh
-python3 -m pip install -r requirements-images.txt
-```
-
-Run this from the downloaded ungrok checkout after reviewing its pinned requirement. Text-only use does not need Pillow. If package installation is restricted, use an approved environment that makes the Pillow-enabled `python3` available to the host; do not bypass the system's package protections.
+Large inline images also need Pillow in the host's `python3` environment. Text-only use does not need Pillow; install it after downloading and reviewing the source below.
 
 Native Anthropic Messages API endpoints do not work directly with this adapter. A model appearing in an endpoint's catalog does not establish tool or streaming compatibility. Use an authorized compatible gateway if your provider needs translation. ungrok does not install a proxy or supply provider access.
 
@@ -39,15 +33,29 @@ Run as the host file's owner, without `sudo`. Host, data, and state paths must b
 ## 2. Download and inspect
 
 ```sh
-git clone https://github.com/abhaysudhir/ungrok.git
+git clone --branch v0.1.0-rc.1 --single-branch https://github.com/abhaysudhir/ungrok.git
 cd ungrok
+git rev-parse HEAD
+```
+
+These commands select `v0.1.0-rc.1`. Compare the printed commit with [the release notes](https://github.com/abhaysudhir/ungrok/releases/tag/v0.1.0-rc.1) and inspect the source before continuing. If the tag is not published yet, stop rather than substituting the moving `main` branch.
+
+```sh
 ./ungrok --help
 ./ungrok doctor
 ```
 
 `doctor` is read-only. Exit status 1 means the setup is not ready, which can be expected before first configuration. Read each finding. A missing ungrok configuration is different from an unsupported host layout; resolve compatibility failures before setup.
 
-Review the code before running it. For a reproducible installation, check out a release or commit you have reviewed instead of relying on a moving branch.
+Keep the exact checked-out commit and a copy of the source outside the remote computer. The CLI's version string alone cannot distinguish development commits. If you download the source archive instead, verify its SHA-256 against the release checksum before extracting and running it.
+
+If you will send large images, review and install the optional dependency:
+
+```sh
+python3 -m pip install -r requirements-images.txt
+```
+
+Use the `python3` environment available to the host process. If package installation is restricted, use an approved environment; do not bypass the system's package protections. An environment activated only in your terminal may not be inherited by an already-running host supervisor.
 
 ## 3. Configure and patch
 

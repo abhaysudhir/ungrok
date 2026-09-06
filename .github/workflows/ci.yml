@@ -29,7 +29,7 @@ jobs:
       - name: Python syntax and tests
         run: |
           python3 -m pip install -r requirements-images.txt
-          python3 -m py_compile ungrok.py
+          python3 -m py_compile ungrok.py scripts/resize_image.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Adapter syntax and tests
         run: |

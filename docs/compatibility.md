@@ -1,12 +1,12 @@
 # Compatibility and evidence
 
-ungrok is **alpha**. Its patch relies on private host internals, and the hardened ungrok implementation has not yet been verified end-to-end on a live Grok Bot computer. Do not treat the historical upstream result as a test of this code.
+ungrok **v0.1.0-rc.1 is a prerelease**. Its patch relies on private host internals. The legacy compatibility repair has narrow live results, but the new installer's complete setup/restart/repair/rollback path and hardened adapter still need their own live verification. Passing tests does not establish stable support.
 
 ## Known image incident
 
 An image-heavy request was reported to fail with HTTP 413, indicating that a request was too large for an upstream limit. Offline reproduction also confirmed that the earlier consecutive-user-message merge could discard structured images. That data-loss bug is a separate finding; it does not establish the cause of a computer crash or prove which component rejected the live request.
 
-The image preprocessing path now has offline integration tests, including a real Pillow downsample and preservation of original message objects. Live recovery and end-to-end verification remain pending. Do not treat this change as a proven fix for every HTTP 413 or computer failure.
+The image preprocessing path has offline integration tests, including a real Pillow downsample and preservation of original message objects. The separate legacy compatibility repair was also tested with a six-image app upload and four earlier pages; a sample of the answer was checked against an original image. A separate post-reply image follow-up was not tested. This evidence does not establish a fix for every HTTP 413 or computer failure, or verify the new-install path. See [the legacy test record](../compat/README.md).
 
 ## Test status
 
@@ -14,6 +14,7 @@ The image preprocessing path now has offline integration tests, including a real
 | --- | --- |
 | Historical upstream custom-provider route | Observed working for a plain-text bot reply and matching custom session logs. |
 | Historical post-update repair | Observed working after a computer update in a client `0.43.0` context on September 5, 2026. This is not a universal host-version guarantee. |
+| Legacy compatibility repair | Live text diagnostics, one narrowly timed superseding follow-up, and a six-image upload with earlier-image context were recorded September 5. This retains upstream configuration/authentication and is not the hardened new-install path. |
 | Hardened ungrok installer and adapter | New implementation; live end-to-end verification pending. See repository CI for automated test results. |
 | Arbitrary OpenAI-compatible providers/models | Experimental. Compatibility depends on streaming, tools, model behavior, and gateway details. |
 | Native Anthropic Messages API | Not directly compatible. Requires an authorized Chat Completions translation layer. |
@@ -49,6 +50,10 @@ The helper reads and writes image data through pipes, without writing images to 
 Each image is limited to 20 MiB of decoded input and 40 megapixels, with a 4 MiB JPEG output limit before base64 encoding in the helper. The adapter limits helper stdout to 6 MiB and enforces a 20-second deadline per image. Cancellation stops the helper. Missing Pillow/helper, invalid data, or exceeded limits fail the request instead of forwarding the large original.
 
 Smaller inline images pass through unchanged. Remote image URLs are never fetched by the helper. Reducing each image does not guarantee the combined request fits every provider's limit; a large batch or long conversation can still be rejected. Send fewer images when needed.
+
+The adapter retains at most 20 recent images and excludes image bytes from its text budget. Older images can be replaced with an omission notice. Long text/tool content can still be clipped, and older turns can be dropped. The serialized request is capped separately at 16 MiB after resizing. These are bounds, not a promise to preserve an entire conversation.
+
+Attachment transfer from the desktop app happens before adapter preprocessing. The inspected desktop `0.43.0` implementation uploads files sequentially in 4 MiB chunks and gives the entire batch a 120-second commit deadline. Its per-file caps are 25 MiB for nonvideo and 200 MiB for video; no aggregate byte or pixel limit was found in that upload path. A slow upload can stall before any provider request exists, so adapter resizing cannot fix that stage. This is a version-specific observation, not a promised limit in future app releases.
 
 ## Recording a new successful test
 

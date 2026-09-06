@@ -287,21 +287,31 @@ function convertContentPart(part) {
     const binaryUrl = binaryImageUrl(binary, declaredMime);
     if (binaryUrl) return { kind: "image", url: binaryUrl };
     const urlObject = p.image_url?.url ?? p.image_url ?? p.url ?? p.image ?? p.source?.url;
-    if (urlObject instanceof URL) return { kind: "image", url: urlObject.href };
+    if (urlObject instanceof URL) {
+      if (!["https:", "http:"].includes(urlObject.protocol)) throw new Error("unsupported image URL");
+      return { kind: "image", url: urlObject.href };
+    }
     const url = p.image_url?.url ?? (typeof p.image_url === "string" ? p.image_url : undefined) ??
       p.url ?? (typeof p.image === "string" ? p.image : undefined) ??
       (p.source?.type === "url" ? p.source.url : undefined);
-    if (typeof url === "string" && url) return { kind: "image", url };
+    if (typeof url === "string" && url) {
+      if (/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/i.test(url)) return { kind: "image", url };
+      let parsed;
+      try { parsed = new URL(url); } catch { throw new Error("invalid image URL"); }
+      if (!["https:", "http:"].includes(parsed.protocol)) throw new Error("unsupported image URL");
+      return { kind: "image", url };
+    }
     const source = p.source?.type === "base64" ? p.source : p;
     const mime = source.media_type ?? source.mimeType ?? source.mime_type;
     const data = source.data;
     // Do not stringify binary objects or truncate image bytes into invalid URLs.
     if (typeof mime === "string" && /^image\/(png|jpeg|gif|webp)$/i.test(mime) &&
-        typeof data === "string" && data.length && /^[A-Za-z0-9+/]*={0,2}$/.test(data) &&
+        typeof data === "string" && data.length && data.length <= Math.ceil(20 * 1024 * 1024 / 3) * 4 && /^[A-Za-z0-9+/]*={0,2}$/.test(data) &&
         data.length % 4 !== 1 && (Buffer.from(data, "base64").toString("base64") === data ||
           Buffer.from(data, "base64").toString("base64").replace(/=+$/, "") === data)) {
       return { kind: "image", url: `data:${mime.toLowerCase()};base64,${data}` };
     }
+    throw new Error("missing or unsupported image payload");
   }
   if (p.text) return { kind: "text", text: asString(p.text) };
   return null;
@@ -400,7 +410,7 @@ function convertMessages(rawList) {
     try {
       out.push(...convertMessage(msg));
     } catch (err) {
-      console.error("[sand-xai] convertMessage failed:", err);
+      throw new Error("ungrok message conversion failed; no partial conversation was sent");
     }
   }
   if (out.length && out[out.length - 1].role === "assistant") {
@@ -765,9 +775,15 @@ function httpPostStream(urlString, { headers, body, onData, signal }) {
         headers: reqHeaders,
       },
       (res) => {
+        const failResponse = message => {
+          reject(new Error(message));
+          res.destroy();
+          req.destroy();
+        };
         let buffer = "";
         let received = 0;
         let choicesSeen = false;
+        let completionSeen = false;
         const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 300;
         if (!ok) {
           const err = new Error(`ungrok provider HTTP ${res.statusCode}`);
@@ -781,29 +797,33 @@ function httpPostStream(urlString, { headers, body, onData, signal }) {
         res.on("aborted", () => reject(new Error("provider response interrupted")));
         res.on("data", (chunk) => {
           received += Buffer.byteLength(chunk);
-          if (received > MAX_RESPONSE_BYTES) { req.destroy(new Error("ungrok response exceeds size limit")); return; }
+          if (received > MAX_RESPONSE_BYTES) { failResponse("ungrok response exceeds size limit"); return; }
           buffer += chunk;
           let idx;
           while ((idx = buffer.indexOf("\n")) >= 0) {
             let line = buffer.slice(0, idx);
             buffer = buffer.slice(idx + 1);
-            if (Buffer.byteLength(line) > MAX_SSE_LINE_BYTES) { req.destroy(new Error("ungrok SSE event exceeds size limit")); return; }
+            if (Buffer.byteLength(line) > MAX_SSE_LINE_BYTES) { failResponse("ungrok SSE event exceeds size limit"); return; }
             if (line.endsWith("\r")) line = line.slice(0, -1);
             if (!line.startsWith("data:")) continue;
             const data = line.slice(5).trim();
-            if (!data || data === "[DONE]") continue;
+            if (!data) continue;
+            if (data === "[DONE]") { completionSeen = true; continue; }
             try {
               const event = JSON.parse(data);
               if (Array.isArray(event?.choices) && event.choices.length) choicesSeen = true;
+              if (event?.choices?.some(choice => choice.finish_reason != null)) completionSeen = true;
               onData(event);
             } catch {
-              /* ignore malformed SSE */
+              failResponse("ungrok provider returned invalid stream data");
+              return;
             }
           }
-          if (Buffer.byteLength(buffer) > MAX_SSE_LINE_BYTES) req.destroy(new Error("ungrok SSE event exceeds size limit"));
+          if (Buffer.byteLength(buffer) > MAX_SSE_LINE_BYTES) failResponse("ungrok SSE event exceeds size limit");
         });
         res.on("end", () => {
           if (!choicesSeen) { reject(new Error("ungrok provider returned no Chat Completions stream")); return; }
+          if (!completionSeen) { reject(new Error("ungrok provider stream ended before completion")); return; }
           resolve();
         });
       }
@@ -974,7 +994,13 @@ async function runStream({ model, messages, tools, invocationId, auth, signal, o
   for (const acc of toolAcc.values()) {
     const id = acc.id || sanitizeToolId(`call_${toolCalls.length}`);
     const name = acc.name || "tool";
-    const args = parseArgs(acc.args);
+    let args;
+    try {
+      args = JSON.parse(acc.args);
+      if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error();
+    } catch {
+      return errorResult(model, invocationId, new Error("ungrok provider returned invalid tool arguments"));
+    }
     toolCalls.push({ id, name, args });
     push({ type: "tool-call", toolCallId: id, toolName: name, args });
   }

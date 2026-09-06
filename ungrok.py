@@ -21,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.1.0"
+VERSION = "0.1.0-rc.1"
 ROOT = Path(__file__).resolve().parent
 BEGIN = "      // ungrok:begin v1"
 END = "      // ungrok:end v1"
@@ -84,13 +84,15 @@ def validate_config(values):
     if missing:
         raise Failure("Missing provider fields: " + ", ".join(sorted(missing)))
     for key, value in values.items():
-        if key not in KEYS or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        if key not in KEYS or not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise Failure("Invalid or unsupported provider field; use the example configuration.")
         if value != value.strip() or value.startswith(("'", '"')) or value.endswith(("'", '"')):
             raise Failure("Provider values must not contain outer quotes or whitespace.")
         if len(value.encode("utf-8")) > 16384:
             raise Failure("Provider field exceeds the 16 KiB limit.")
     try:
+        if any(c.isspace() for c in values["SAND_XAI_BASE_URL"]):
+            raise ValueError("Whitespace in endpoint")
         base = urllib.parse.urlsplit(values["SAND_XAI_BASE_URL"])
         port = base.port
     except ValueError:
@@ -205,11 +207,26 @@ class Installation:
     def load_manifest(self):
         try:
             info = json.loads(read_regular(self.manifest))
+            required = {"version", "host", "config", "backup", "original_sha256", "patched_sha256",
+                        "adapter_sha256", "image_helper_sha256"}
+            if not isinstance(info, dict) or not required.issubset(info) or any(
+                not isinstance(info[key], str) or not info[key] for key in required
+            ) or any(not re.fullmatch(r"[0-9a-f]{64}", info[key]) for key in required if key.endswith("_sha256")):
+                raise Failure("Invalid installation record. Inspect private backups before proceeding.")
             if info["host"] != str(self.host) or info["config"] != str(self.config):
                 raise Failure("Saved installation belongs to different paths. Use its original path overrides.")
             return info
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             raise Failure("Invalid installation record. Inspect private backups before proceeding.") from None
+
+    def original_backup(self, info):
+        backup = Path(info["backup"])
+        if backup.resolve().parent.parent != self.state_dir.resolve():
+            raise Failure("Backup path is outside this installation's private state.")
+        restored = read_regular(backup)
+        if digest(restored) != info["original_sha256"]:
+            raise Failure("Backup checksum mismatch. Nothing changed.")
+        return restored
 
     def is_current(self, original):
         if BEGIN.encode() not in original:
@@ -223,6 +240,7 @@ class Installation:
         original = self.preflight()
         if self.is_current(original):
             info = self.load_manifest()
+            self.original_backup(info)
             bundled = read_regular(ROOT / "vendor/xai-prompt-session.cjs")
             if digest(bundled) != info["adapter_sha256"]:
                 raise Failure("This checkout has a different adapter. Roll back with the installed version before upgrading.")
@@ -250,11 +268,18 @@ class Installation:
         values = validate_config(values)
         self.syntax(candidate, "patched host")
         self.syntax(vendor, "provider adapter")
+        watched = (self.adapter, self.image_helper, self.config, self.manifest)
+        before = {path: (read_regular(path), stat.S_IMODE(path.stat().st_mode))
+                  if path.exists() or path.is_symlink() else None for path in watched}
         confirm("This changes the shared host for ALL bots. Prompts and tool results go to your endpoint. Continue?")
         secure_dir(self.state_dir)
         with self.lock():
             if read_regular(self.host) != original:
                 raise Failure("Host changed during preflight. Retry doctor; nothing changed.")
+            for path in watched:
+                current = (read_regular(path), stat.S_IMODE(path.stat().st_mode)) if path.exists() or path.is_symlink() else None
+                if current != before[path]:
+                    raise Failure("Installation files changed during confirmation. Nothing overwritten; retry doctor.")
             backup = Path(tempfile.mkdtemp(prefix="backup-", dir=self.state_dir))
             atomic_write(backup / "host-main.cjs", original)
             targets = [(self.adapter, vendor, 0o600), (self.image_helper, image_helper, 0o600), (self.config, encode_config(values), 0o600),
@@ -264,6 +289,8 @@ class Installation:
                 old[target] = (read_regular(target), stat.S_IMODE(target.stat().st_mode)) if target.exists() else None
                 if target == self.config and old[target]:
                     atomic_write(backup / "provider.env", old[target][0])
+                elif target in (self.adapter, self.image_helper) and old[target]:
+                    atomic_write(backup / target.name, old[target][0])
             record = info or {
                 "version": VERSION, "host": str(self.host), "config": str(self.config),
                 "backup": str(backup / "host-main.cjs"), "original_sha256": digest(original),
@@ -283,7 +310,7 @@ class Installation:
                             target.unlink(missing_ok=True)
                         else:
                             atomic_write(target, *old[target])
-                    except OSError:
+                    except (OSError, Failure):
                         failures.append(str(target))
                 if failures:
                     raise Failure("Install failed and some files could not be restored: " + ", ".join(failures) +
@@ -309,6 +336,7 @@ class Installation:
         original = self.preflight()
         if self.is_current(original):
             info = self.load_manifest()
+            self.original_backup(info)
             if not self.adapter.exists() or digest(read_regular(self.adapter)) != info["adapter_sha256"]:
                 raise Failure("Host is patched but adapter is missing or changed. Inspect it, then use repair.")
             if not self.image_helper.exists() or digest(read_regular(self.image_helper)) != info.get("image_helper_sha256"):
@@ -338,12 +366,7 @@ class Installation:
         if not self.is_current(original):
             raise Failure("Current host is not the recorded patched host. Refusing cross-version rollback.")
         info = self.load_manifest()
-        backup = Path(info["backup"])
-        if backup.resolve().parent.parent != self.state_dir.resolve():
-            raise Failure("Backup path is outside this installation's private state.")
-        restored = read_regular(backup)
-        if digest(restored) != info["original_sha256"]:
-            raise Failure("Backup checksum mismatch. Nothing changed.")
+        restored = self.original_backup(info)
         self.syntax(restored, "rollback host")
         confirm("Restore this host version's original inference code? Default-provider routing resumes after restart.")
         secure_dir(self.state_dir)
@@ -372,6 +395,10 @@ class Installation:
             helper_before = read_regular(self.image_helper)
             if digest(helper_before) != info.get("image_helper_sha256"):
                 raise Failure("Image helper does not match installation. Repair before restart.")
+        else:
+            # A rollback restores this known layout. Do not restart foreign hooks
+            # just because their bundle happens to pass Node's syntax check.
+            patch_bytes(original, self.config)
         process = verified_process(pid, self.host)
         existing = set()
         for entry in Path("/proc").iterdir():
@@ -416,7 +443,7 @@ def verified_process(pid, host):
         if pid <= 1 or proc.stat().st_uid != os.getuid():
             raise Failure("Host PID must belong to the current user.")
         args = (proc / "cmdline").read_bytes().decode().split("\0")
-        if str(host) not in args or not Path(args[0]).name.startswith("node"):
+        if str(host) not in args or Path(args[0]).name not in {"node", "nodejs"}:
             raise Failure("PID is not the specified Node host process.")
         status = (proc / "stat").read_text().rsplit(")", 1)[1].split()
         parent, start = int(status[1]), status[19]

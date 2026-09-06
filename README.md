@@ -14,7 +14,7 @@ ungrok is an unofficial, reversible host mod. It adds a custom inference adapter
 
 [Get started](docs/getting-started.md) · [After an update](docs/updates.md) · [Compatibility](docs/compatibility.md) · [Troubleshooting](docs/troubleshooting.md)
 
-> **Experimental release.** The original adapter was tested on a Grok Bot computer, including recovery after an update. This hardened public version has automated fixture tests, but has not yet been verified end-to-end on a live Grok Bot host. It relies on private host internals. Read the limits before installing it on a computer you depend on.
+> **v0.1.0-rc.1 prerelease.** The legacy compatibility repair has narrow live text, follow-up, and image results. The new installer and hardened adapter have automated tests, but their complete live setup/restart/repair/rollback path remains unverified. This relies on private host internals. Use a computer you can afford to recover, and read the [evidence boundary](docs/compatibility.md).
 
 ## Why ungrok?
 
@@ -49,8 +49,14 @@ You need a working Grok Bot computer, Git, Python 3.10+, the host's Node runtime
 **Run this inside Grok Bot → Computer → Terminal. Not in Terminal on your Mac.**
 
 ```sh
-git clone https://github.com/abhaysudhir/ungrok.git
+git clone --branch v0.1.0-rc.1 --single-branch https://github.com/abhaysudhir/ungrok.git
 cd ungrok
+git rev-parse HEAD
+```
+
+This selects the `v0.1.0-rc.1` tag. Compare its commit with [the release notes](https://github.com/abhaysudhir/ungrok/releases/tag/v0.1.0-rc.1), review the code, and keep that checkout for recovery. A clone of `main` is a development snapshot, not a stable release. If the candidate is not published yet, stop rather than substituting `main`.
+
+```sh
 ./ungrok doctor
 ```
 
@@ -66,6 +72,11 @@ Enter your endpoint's base URL, exact model ID, and key at the prompts. Setup sa
 
 ```sh
 ./ungrok probe
+```
+
+Stop if the probe fails. After it passes:
+
+```sh
 pgrep -af 'host-main.cjs'
 ./ungrok restart --pid HOST_PID --yes
 ```
@@ -77,6 +88,8 @@ Finally, send this to an idle bot:
 > Diagnostic routing check: reply exactly UNGROK_OK. Do not use tools or message other bots.
 
 Check both the reply **and fresh `[ungrok] session` log lines** showing your intended model and endpoint. A reply alone is not proof of routing. [Full setup and verification →](docs/getting-started.md)
+
+For large inline images, install the pinned optional Pillow dependency with `python3 -m pip install -r requirements-images.txt` in the host's Python environment. The adapter downsamples request copies; it does not change original image files or accelerate the desktop app's attachment upload. [Image limits →](docs/compatibility.md#inline-images)
 
 ## Pick an endpoint, not a logo
 
@@ -130,6 +143,8 @@ Run the credential-free tests:
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 node --test tests/*.test.cjs
 ```
+
+The full test suite requires Pillow; install `requirements-images.txt` first as described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and [SECURITY.md](SECURITY.md) for private reports. If this is useful, star the repo so you can find it after the next computer update.
 

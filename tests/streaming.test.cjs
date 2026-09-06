@@ -91,3 +91,41 @@ test("pre-request conversion exception becomes error result, never detached reje
   assert.equal(parts.find(p => p.type === "error").error.message, "provider request preparation failed");
   assert.equal((await bounded(allMetadata(stream)))[0].finishReason, "error");
 });
+
+test("truncated or malformed provider streams cannot produce successful completion", async t => {
+  for (const body of [
+    'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+    'data: {not valid JSON}\n\ndata: [DONE]\n\n',
+  ]) {
+    const ex = await fixture(t, (req, res) => { req.resume(); req.on("end", () => { res.writeHead(200); res.end(body); }); });
+    const stream = ex.stream({}, "id", []);
+    assert.equal((await bounded(allMetadata(stream)))[0].finishReason, "error");
+  }
+});
+
+test("invalid final tool arguments never yield executable tool calls", async t => {
+  const ex = await fixture(t, (req, res) => {
+    req.resume(); req.on("end", () => {
+      const event = { choices: [{ delta: { tool_calls: [{ index: 0, id: "call1", function: { name: "write", arguments: '{"partial":' } }] }, finish_reason: "length" }] };
+      res.writeHead(200); res.end(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`);
+    });
+  });
+  const stream = ex.stream({}, "id", []);
+  const parts = [];
+  for await (const part of stream.fullStream) parts.push(part);
+  assert.equal((await bounded(allMetadata(stream)))[0].finishReason, "error");
+  assert.ok(!parts.some(part => part.type === "tool-call"));
+});
+
+test("message conversion exceptions cannot leak contents or drop a user request", async t => {
+  const ex = await fixture(t, (req, res) => { res.end(); });
+  ex.appendMessages({ get role() { throw new Error("PRIVATE_CONTENT_MUST_NOT_LEAK"); } });
+  const logs = [];
+  const original = console.error;
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    const stream = ex.stream({}, "id", []);
+    assert.equal((await bounded(allMetadata(stream)))[0].finishReason, "error");
+  } finally { console.error = original; }
+  assert.doesNotMatch(logs.join("\n"), /PRIVATE_CONTENT/);
+});

@@ -1,6 +1,6 @@
 # Launch copy
 
-Drafts for the maintainer to review and post. Nothing in this file has been posted automatically.
+Drafts for the maintainer to review and post. Nothing in this file has been posted automatically. This is prerelease copy; publish it only after the candidate tag, source archive, checksum, and CI result are verified.
 
 ## Repository description
 
@@ -12,7 +12,7 @@ I made ungrok: an unofficial way to point Grok Bot at an authorized OpenAI-compa
 
 It patches the shared remote host and leaves the desktop app alone. You get setup checks, backups, post-update repair, and rollback.
 
-It's alpha. The hardened version still needs live end-to-end testing, and computer updates can break it. I'd love help testing compatible endpoints and improving recovery.
+It's an alpha prerelease. The legacy compatibility repair has narrow live results; the hardened new-install path still needs live end-to-end testing. Computer updates can break it. I'd love help testing compatible endpoints and improving recovery.
 
 https://github.com/abhaysudhir/ungrok
 

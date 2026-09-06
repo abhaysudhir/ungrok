@@ -56,14 +56,17 @@ test("supported image URL and base64 source shapes normalize to image_url", () =
     "https://example.invalid/image.webp", "https://example.invalid/image.png"]);
 });
 
-test("invalid MIME or base64 does not become a malformed image URL", () => {
-  const result = adapter.convertMessages([{ role: "user", content: [
-    { type: "text", text: "keep this" },
+test("invalid declared images reject the request instead of silently disappearing", () => {
+  for (const image of [
     { type: "image", source: { type: "base64", media_type: "text/html", data: "AQID" } },
     { type: "image", source: { type: "base64", media_type: "image/png", data: "not base64!" } },
     { type: "image", source: { type: "base64", media_type: "image/png", data: "AQID==" } },
     { type: "image", image: { unexpected: "object" } },
-  ] }]);
-  assert.deepEqual(imageUrls(result), []);
-  assert.equal(result[0].content, "keep this");
+    { type: "image" },
+    { type: "image", url: "not a URL" },
+    { type: "image", url: "file:///private/image.png" },
+    { type: "image", url: "data:image/png;base64,invalid!" },
+  ]) assert.throws(() => adapter.convertMessages([{ role: "user", content: [
+    { type: "text", text: "keep this" }, image,
+  ] }]), /message conversion failed/);
 });

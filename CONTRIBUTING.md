@@ -33,6 +33,17 @@ Keep PRs focused. Explain what changed, how you tested it, and any remaining unc
 2. Check public files and git history for secrets and personal data.
 3. Review README commands against the actual CLI.
 4. Record whether live end-to-end verification was performed. Do not relabel fixture tests as a live test.
-5. Tag the reviewed commit and attach a source archive with its SHA-256 checksum.
+5. Tag only the reviewed, passing commit. Publish the candidate as a GitHub **prerelease**, with the exact commit and unresolved live-test gaps in its notes. Attach a source archive and its SHA-256 checksum; verify both after upload.
+6. For a stable release, record a clean current-version host installation, real app text/tool/image requests, cancellation/follow-up, repeated setup, supervised restart, post-update repair, and rollback using the hardened path. The legacy compatibility patch's live results do not replace these checks.
+
+Keep release tags immutable. Publish a new candidate for changed code rather than moving a tag. Review dependency-update PRs separately, including their runtime requirements; a green test run is evidence, not automatic merge approval.
 
 A release must not change users' live Grok computers automatically.
+
+Build the source archive from a clean, committed checkout:
+
+```sh
+python3 scripts/build_release.py --output-dir /path/to/new-release-output
+```
+
+The output directory must not already contain the archive or `SHA256SUMS`. The script packages only committed files at `HEAD`, uses the committed CLI version, and fixes gzip timestamps. Build twice in different directories and compare hashes before uploading. Checksums detect changed downloads; they are not a cryptographic signature or proof of maintainer identity.

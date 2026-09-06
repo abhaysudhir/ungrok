@@ -1,15 +1,17 @@
-# Adapter provenance
+# Provenance
 
-`xai-prompt-session.cjs` is derived from [BlockedPath/grok-bot-setup](https://github.com/BlockedPath/grok-bot-setup), commit `d9119f9632c635473213c57ace336028f7278abd`, upstream file `xai-prompt-session.cjs` (Git blob `e3fe55b30e294248474dc27f0621565009473622`). The upstream MIT license is preserved in [LICENSE](LICENSE).
+The historical `xai-prompt-session.cjs` derives from [BlockedPath/grok-bot-setup](https://github.com/BlockedPath/grok-bot-setup), commit `d9119f9632c635473213c57ace336028f7278abd`, file `xai-prompt-session.cjs` (Git blob `e3fe55b30e294248474dc27f0621565009473622`). Its MIT notice remains in [LICENSE](LICENSE).
 
-ungrok changes: explicit absolute configuration-file argument; validated, whitelisted immutable per-session configuration; no process environment mutation or ambient credential reading; no Grok session authentication fallback; configured model overrides host-selected models; HTTPS except loopback HTTP; no endpoint credentials/query/fragment; no debug dump; sanitized HTTP errors and origin-only endpoint logs; no standalone network smoke test. AsyncLocalStorage isolates configuration across concurrent sessions. Configuration edits apply to new sessions, not already-created sessions.
+The superseded 0.1 design added explicit configuration, request bounds, image/context fixes, streaming/cancellation, and hash-checked recovery over an API-compatible transport.
 
-## Boundaries
+0.2.0-alpha.1 moves inference to official native Claude Code/Codex clients. They own the user's subscription sign-in. It must not reuse the older credential-discovery/proxy path. Config selects provider, native executable, and optional model.
 
-- This adapter implements OpenAI Chat Completions with SSE, not native Anthropic Messages or OpenAI Responses. A compatible proxy may be necessary.
-- Tool conversion and character-budget trimming are derived from upstream, with fixes for binary image shapes, consecutive-user image merges, and preserving the latest real request after tools/follow-ups. Long messages/tool results can be clipped and older context dropped. Up to 20 recent images remain outside the text budget; this is not token-exact accounting or full-history preservation.
-- Large inline image request copies are processed sequentially by the optional Python/Pillow helper. Images are resized in memory; originals are unchanged. See [image limits](../docs/compatibility.md#inline-images). Local desktop-to-host uploads happen before this adapter and are outside its control.
-- Unlike upstream's whole-response buffering, stream events are delivered as they arrive. Returning the stream iterator cancels its HTTP request, including when a read is pending. Explicit `ctx.signal` / `ctx.abortSignal` and fourth-argument signal fields are supported; other private host cancellation interfaces remain unverified.
-- Request timeout and total deadline are five minutes. Wire responses are capped at 8 MiB, individual SSE lines at 1 MiB, serialized requests at 16 MiB, and private configuration files at 64 KiB. Character-budget settings are capped at two million and requested output tokens at 131,072. A lagging stream consumer is limited to 10,000 queued events before cancellation. These ceilings limit memory growth; they do not guarantee a model can accept those sizes. Redirects are not followed. There is no automatic retry, billing verification, or endpoint/model capability certification.
-- HTTPS validation does not establish that a provider is trustworthy. Configuring an endpoint authorizes sending conversation, images, and tool context to that endpoint. Loopback services can themselves forward data elsewhere.
-- Current host compatibility still depends on the host hook and private session interface. Passing offline tests does not prove compatibility with a future Grok Bot update.
+Grok remains the tool executor. Native tools must be disabled and structured responses validated. See [architecture](../docs/architecture.md) and [evidence](../docs/compatibility.md).
+
+Historical source and compatibility patches are not recommended onboarding. Their live results do not certify native permissions, authentication, billing, or host compatibility.
+
+## OpenClaw design reference
+
+The native runtime policy was informed by OpenClaw's official-client integration, particularly its isolated Claude side-question execution path and Codex app-server policy. Reviewed commit: `b8cbece8fb8de577d9ff33cedf8d8250585c55e4`. References: [Anthropic CLI policy source](https://github.com/openclaw/openclaw/blob/b8cbece8fb8de577d9ff33cedf8d8250585c55e4/extensions/anthropic/cli-shared.ts), [Codex app-server policy source](https://github.com/openclaw/openclaw/blob/b8cbece8fb8de577d9ff33cedf8d8250585c55e4/extensions/codex/src/app-server/app-server-policy.ts), and [MIT license](https://github.com/openclaw/openclaw/blob/b8cbece8fb8de577d9ff33cedf8d8250585c55e4/LICENSE).
+
+This is design provenance, not a claim that ungrok inherits OpenClaw's compatibility or verification. Any copied code must retain the applicable MIT notice; runtime behavior must be tested independently against the exact client versions used here.

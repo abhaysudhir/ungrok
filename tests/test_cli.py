@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -16,8 +17,7 @@ SPEC = importlib.util.spec_from_file_location("ungrok_cli", ROOT / "ungrok.py")
 cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
 NODE = shutil.which("node")
-VALUES = {"SAND_XAI_BASE_URL": "http://127.0.0.1:8317/v1",
-          "SAND_XAI_MODEL": "example-model", "XAI_API_KEY": "test-only-secret"}
+VALUES = {"UNGROK_PROVIDER": "claude", "UNGROK_MODEL": "sonnet", "UNGROK_CLI": "/test-only/claude"}
 
 
 def host_source(extra=""):
@@ -44,8 +44,7 @@ class InstallationTests(unittest.TestCase):
         self.installation.host.chmod(0o640)
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(cli.sys, "platform", "linux").start()
-        mock.patch.object(cli.urllib.request, "build_opener",
-                          side_effect=AssertionError("Unexpected network access")).start()
+        self.auth_check = mock.patch.object(cli, "runtime_check").start()
         self.stdout = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.stdout)
         # Keep the context manager that actually entered alive through cleanup.
@@ -79,7 +78,7 @@ class InstallationTests(unittest.TestCase):
         for path in (self.installation.config, self.installation.adapter, self.installation.manifest):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.state_dir.stat().st_mode & 0o777, 0o700)
-        self.assertNotIn(VALUES["XAI_API_KEY"], self.stdout.getvalue())
+        self.auth_check.assert_called_once_with(VALUES, "status", NODE)
 
     def test_idempotent_repair_keeps_original_backup_and_host(self):
         self.install()
@@ -97,6 +96,29 @@ class InstallationTests(unittest.TestCase):
         self.install()
         self.assertEqual(cli.digest(self.installation.adapter.read_bytes()), record["adapter_sha256"])
         self.assertEqual(self.manifest(), record)
+
+    def test_subscription_helpers_missing_repair_and_tampering_refused(self):
+        self.install()
+        for helper, key in ((self.installation.subscription_helper, "subscription_helper_sha256"),
+                            (self.installation.codex_helper, "codex_helper_sha256")):
+            with self.subTest(helper=helper.name):
+                helper.unlink()
+                self.install()
+                self.assertEqual(cli.digest(helper.read_bytes()), self.manifest()[key])
+                original = helper.read_bytes()
+                helper.write_bytes(b"// user changed runtime\n")
+                self.assert_refusal_unchanged(self.install)
+                helper.write_bytes(original)
+
+    def test_subscription_auth_failure_does_not_patch_or_write(self):
+        self.auth_check.side_effect = cli.Failure("Subscription auth not verified")
+        self.assert_refusal_unchanged(self.install)
+
+    def test_legacy_config_is_not_overwritten_by_new_setup(self):
+        self.installation.config.write_bytes(b"XAI_API_KEY=test-only-legacy\n")
+        self.installation.config.chmod(0o600)
+        self.assert_refusal_unchanged(self.install)
+        self.auth_check.assert_not_called()
 
     def test_updated_stock_host_gets_new_backup(self):
         self.install()
@@ -164,8 +186,8 @@ class InstallationTests(unittest.TestCase):
 
     def test_changed_files_during_confirmation_are_preserved(self):
         self.install()
-        for target in (self.installation.config, self.installation.adapter,
-                       self.installation.image_helper, self.installation.manifest):
+        for target in (self.installation.config, self.installation.adapter, self.installation.subscription_helper,
+                       self.installation.codex_helper, self.installation.image_helper, self.installation.manifest):
             original = target.read_bytes()
             changed = original + b"\n"
             def concurrent_edit(message):
@@ -191,7 +213,8 @@ class InstallationTests(unittest.TestCase):
         new = set(self.state_dir.glob("backup-*")) - existing
         self.assertEqual(len(new), 1)
         backup = new.pop()
-        for helper in (self.installation.adapter, self.installation.image_helper):
+        for helper in (self.installation.adapter, self.installation.image_helper,
+                       self.installation.subscription_helper, self.installation.codex_helper):
             self.assertEqual((backup / helper.name).read_bytes(), helper.read_bytes())
 
     def test_rollback_then_reinstall_lifecycle(self):
@@ -221,7 +244,7 @@ class InstallationTests(unittest.TestCase):
             return real_write(path, data, mode)
         with mock.patch.object(cli, "atomic_write", side_effect=fail_once):
             with self.assertRaises(OSError):
-                self.installation.install(dict(VALUES, XAI_API_KEY="changed-test-key"), lambda message: None)
+                self.installation.install(dict(VALUES, UNGROK_MODEL="opus"), lambda message: None)
         self.assertTrue(failed)
         for path, data in prior.items():
             self.assertEqual(path.read_bytes(), data)
@@ -245,6 +268,8 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.installation.host.read_bytes(), self.original)
         self.assertFalse(self.installation.config.exists())
         self.assertFalse(self.installation.adapter.exists())
+        self.assertFalse(self.installation.subscription_helper.exists())
+        self.assertFalse(self.installation.codex_helper.exists())
         self.assertFalse(self.installation.manifest.exists())
 
     def test_non_linux_is_refused_without_writes(self):
@@ -278,25 +303,24 @@ class InstallationTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_supported_urls(self):
-        for url in ("https://api.example.com/v1", "http://localhost:8317/v1",
-                    "http://127.0.0.1:8317/v1", "http://[::1]:8317/v1"):
-            with self.subTest(url=url):
-                self.assertEqual(cli.validate_config(dict(VALUES, SAND_XAI_BASE_URL=url))["SAND_XAI_THINKING"], "disabled")
+    def test_supported_subscription_providers_and_default_model(self):
+        for provider in ("claude", "chatgpt"):
+            config = {"UNGROK_PROVIDER": provider, "UNGROK_CLI": "/test-only/native-cli"}
+            with self.subTest(provider=provider):
+                self.assertEqual(cli.validate_config(config), config)
+        self.assertEqual(cli.validate_config(dict(VALUES, UNGROK_MODEL="opus[1m]"))["UNGROK_MODEL"], "opus[1m]")
 
-    def test_unsafe_urls_refused(self):
-        for url in ("http://api.example.com/v1", "ftp://localhost/v1", "https://user:secret@example.com/v1",
-                    "https://example.com/v1?key=secret", "https://example.com/v1#fragment", "https://",
-                    "https://example.com:invalid/v1", "https://example.com:99999/v1",
-                    "https://bad host.example/v1", "https://example.com/bad path"):
-            with self.subTest(url=url), self.assertRaises(cli.Failure):
-                cli.validate_config(dict(VALUES, SAND_XAI_BASE_URL=url))
+    def test_legacy_api_configuration_refused(self):
+        for key in ("XAI_API_KEY", "SAND_XAI_BASE_URL", "OPENAI_API_KEY"):
+            with self.subTest(key=key), self.assertRaisesRegex(cli.Failure, "Legacy API"):
+                cli.validate_config(dict(VALUES, **{key: "test-only"}))
 
     def test_invalid_fields_and_model_cap(self):
-        changes = [{"UNKNOWN": "value"}, {"SAND_XAI_MODEL": "x" * 201},
-                   {"SAND_XAI_MODEL": "display name"}, {"XAI_API_KEY": ""},
-                   {"XAI_API_KEY": "secret\nINJECT=value"}, {"XAI_API_KEY": '"quoted"'},
-                   {"XAI_API_KEY": " leading"}, {"SAND_XAI_THINKING": "enabled"}]
+        changes = [{"UNKNOWN": "value"}, {"UNGROK_MODEL": "x" * 201},
+                   {"UNGROK_MODEL": "display name"}, {"UNGROK_CLI": ""},
+                   {"UNGROK_CLI": "/path\nINJECT=value"}, {"UNGROK_MODEL": '"quoted"'},
+                   {"UNGROK_MODEL": " leading"}, {"UNGROK_PROVIDER": "openrouter"},
+                   {"UNGROK_CLI": "relative/path"}]
         for change in changes:
             with self.subTest(change=change), self.assertRaises(cli.Failure):
                 cli.validate_config(dict(VALUES, **change))
@@ -305,7 +329,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_config_field_and_file_caps(self):
         with self.assertRaises(cli.Failure):
-            cli.validate_config(dict(VALUES, XAI_API_KEY="a" * 16385))
+            cli.validate_config(dict(VALUES, UNGROK_CLI="/" + "a" * 16385))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config"
             path.write_bytes(b"#" * 65537)
@@ -341,42 +365,83 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class ProbeTests(unittest.TestCase):
-    def probe_response(self, payload):
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.read.return_value = payload
-        opener = mock.Mock()
-        opener.open.return_value = response
-        return opener, response
+    def process(self, payload):
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (payload, b"")
+        return process
 
-    def test_probe_sends_only_synthetic_prompt_and_disables_proxies(self):
-        opener, response = self.probe_response(b'{"choices":[{"message":{"content":"UNGROK_OK"}}]}')
-        output = io.StringIO()
-        with mock.patch.object(cli.urllib.request, "build_opener", return_value=opener) as build, \
-                contextlib.redirect_stdout(output):
-            cli.probe(VALUES)
-        handlers = build.call_args.args
-        self.assertEqual(handlers[0].proxies, {})
-        self.assertIsInstance(handlers[1], cli.NoRedirect)
-        request = opener.open.call_args.args[0]
-        self.assertEqual(request.full_url, VALUES["SAND_XAI_BASE_URL"] + "/chat/completions")
-        self.assertEqual(json.loads(request.data)["messages"],
-                         [{"role": "user", "content": "Reply exactly UNGROK_OK"}])
-        response.read.assert_called_once_with(1024 * 1024 + 1)
-        self.assertNotIn(VALUES["XAI_API_KEY"], output.getvalue())
+    def test_native_probe_uses_shared_runtime_and_scrubs_api_environment(self):
+        reply = self.process(b'{"ok":true,"provider":"claude","sentinel":"UNGROK_OK"}')
+        with mock.patch.dict(cli.os.environ, {"ANTHROPIC_API_KEY": "secret", "OPENAI_API_KEY": "secret",
+                                            "CLAUDE_CODE_OAUTH_TOKEN": "secret", "HTTP_PROXY": "secret",
+                                            "CLAUDE_CONFIG_DIR": "/test-only/claude-profile", "CODEX_HOME": "/test-only/codex-profile"}), \
+                mock.patch.object(cli.subprocess, "Popen", return_value=reply) as run, \
+                mock.patch.object(cli, "stop_runtime"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cli.probe(VALUES, "/test-only/node")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["/test-only/node", str(ROOT / "vendor/subscription-runtime.cjs"), "probe"])
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "HTTP_PROXY"):
+            self.assertNotIn(key, run.call_args.kwargs["env"])
+        self.assertFalse(Path(command[3]).exists())
+        self.assertEqual(run.call_args.kwargs["env"]["CLAUDE_CONFIG_DIR"], "/test-only/claude-profile")
+        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/test-only/codex-profile")
 
-    def test_probe_response_cap_and_invalid_sentinels(self):
-        for payload in (b"x" * (1024 * 1024 + 1), b"not json", b"{}",
-                        b'{"choices":[{"message":{"content":"wrong"}}]}'):
-            opener, _ = self.probe_response(payload)
-            with self.subTest(length=len(payload)), \
-                    mock.patch.object(cli.urllib.request, "build_opener", return_value=opener), \
-                    self.assertRaises(cli.Failure):
-                cli.probe(VALUES)
+    def test_wrong_auth_or_probe_sentinel_is_refused_without_contents(self):
+        cases = [("status", {"ok": True, "provider": "claude", "subscription": False}),
+                 ("status", {"ok": True, "provider": "chatgpt", "subscription": True}),
+                 ("probe", {"ok": True, "provider": "claude", "sentinel": "PRIVATE_RESPONSE"})]
+        for command, payload in cases:
+            reply = self.process(json.dumps(payload).encode())
+            with self.subTest(command=command), mock.patch.object(cli.subprocess, "Popen", return_value=reply), \
+                    mock.patch.object(cli, "stop_runtime"):
+                with self.assertRaises(cli.Failure) as error:
+                    cli.runtime_check(VALUES, command, "/test-only/node")
+                self.assertNotIn("PRIVATE_RESPONSE", str(error.exception))
 
-    def test_redirect_handler_refuses_credential_forwarding(self):
-        self.assertIsNone(cli.NoRedirect().redirect_request(None, None, 302, "redirect", {},
-                                                          "https://other.example/collect"))
+    def test_login_delegates_only_to_official_subscription_flow(self):
+        with mock.patch.object(cli.sys, "platform", "linux"), \
+                mock.patch.object(cli, "resolve_cli", return_value="/test-only/claude"), \
+                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run, \
+                mock.patch.object(cli, "runtime_check") as status, contextlib.redirect_stdout(io.StringIO()):
+            cli.login("claude", node="/test-only/node")
+        self.assertEqual(run.call_args.args[0], ["/test-only/claude", "auth", "login", "--claudeai"])
+        status.assert_called_once_with({"UNGROK_PROVIDER": "claude", "UNGROK_CLI": "/test-only/claude"}, "status", "/test-only/node")
+
+    def test_missing_official_cli_has_actionable_error(self):
+        with mock.patch.object(cli.shutil, "which", return_value=None), self.assertRaisesRegex(cli.Failure, "docs/providers.md"):
+            cli.resolve_cli("chatgpt")
+
+    @unittest.skipUnless(cli.os.name == "posix", "Process-group cleanup is for the supported Linux host")
+    def test_runtime_timeout_kills_native_descendant_that_ignores_term(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "vendor").mkdir()
+            heartbeat = root / "heartbeat"
+            child_code = (
+                "import signal,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "for _ in range(500):\n"
+                f" with open({str(heartbeat)!r},'a') as stream: stream.write('x')\n"
+                " time.sleep(0.02)\n"
+            )
+            # Test-only native descendant shares the session, just like runtime
+            # CLI mode. Both leader and child deliberately ignore graceful stop.
+            (root / "vendor/subscription-runtime.cjs").write_text(
+                "import signal,subprocess,sys,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                f"subprocess.Popen([sys.executable,'-c',{child_code!r}])\n"
+                "time.sleep(10)\n"
+            )
+            with mock.patch.object(cli, "ROOT", root), \
+                    mock.patch.object(cli, "RUNTIME_TIMEOUTS", {"probe": 0.5}), \
+                    mock.patch.object(cli, "RUNTIME_STOP_GRACE", 0.1):
+                with self.assertRaises(cli.Failure):
+                    cli.runtime_check(VALUES, "probe", cli.sys.executable)
+            self.assertTrue(heartbeat.exists(), "fake native child never started")
+            count = len(heartbeat.read_bytes())
+            time.sleep(0.15)
+            self.assertEqual(len(heartbeat.read_bytes()), count, "native descendant survived timeout")
 
 
 if __name__ == "__main__":

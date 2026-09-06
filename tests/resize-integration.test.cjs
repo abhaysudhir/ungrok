@@ -12,6 +12,7 @@ function isolated(t, helper) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const moduleFile = path.join(dir, 'adapter.cjs');
   fs.copyFileSync(adapterSource, moduleFile);
+  fs.copyFileSync(path.join(__dirname, '../vendor/subscription-runtime.cjs'), path.join(dir, 'subscription-runtime.cjs'));
   if (helper === true) fs.copyFileSync(helperSource, path.join(dir, 'ungrok-resize-image.py'));
   else if (typeof helper === 'string') fs.writeFileSync(path.join(dir, 'ungrok-resize-image.py'), helper);
   return require(moduleFile).prepareInlineImages;

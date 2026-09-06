@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0-alpha.1 (subscription-only alpha)
+
+- Replace active API-compatible onboarding with subscription sign-in through official Claude Code or Codex clients.
+- Configure only native provider, executable path, and optional model. Refuse legacy API configuration rather than importing or deleting credentials.
+- Add native login and synthetic-probe commands. Keep doctor read-only and offline.
+- Keep Grok's host as the tool executor; gate native runtimes until inference-only isolation is proven.
+- Rewrite setup, assistant-guided onboarding, recovery, and security documentation around the native path.
+
+Both native paths are implemented for Claude Code 2.1.263 and Codex 0.153.4. Codex passed all five local subscription checks. Claude passed text, tool proposal, two binary images, and image follow-up; provider safeguards refused tool-result follow-up, which remains incomplete. Linux Grok host end-to-end verification has not been completed. Earlier compatibility results do not certify this overhaul.
+
+## Historical releases
+
+The API-based design below is superseded. These notes describe previous releases, not current setup instructions.
+
 ## 0.1.0-rc.2 (prerelease)
 
 - Start onboarding from the Grok Bot app and explain its remote computer in plain language.

@@ -4,119 +4,109 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const http = require("node:http");
-const { createXaiPromptSession, normalizeToolParameters } = require("../vendor/xai-prompt-session.cjs");
+const runtime = require("../vendor/subscription-runtime.cjs");
+const adapter = require("../vendor/xai-prompt-session.cjs");
 
-function fixture(t, base, extra = "") {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ungrok-adapter-test-"));
+function fixture(t, { mode = "success", model = "sonnet" } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ungrok-subscription-test-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const file = path.join(dir, "config.env");
-  fs.writeFileSync(file, `XAI_API_KEY=TEST_SECRET\nSAND_XAI_BASE_URL=${base}\nSAND_XAI_MODEL=test-model\n${extra}`, { mode: 0o600 });
-  return file;
+  const binary = path.join(dir, "claude");
+  fs.writeFileSync(binary, `#!${process.execPath}
+const args=process.argv.slice(2);
+if(args.includes("--version")) { console.log("2.1.263 (Claude Code)"); process.exit(0); }
+if(args.includes("--help")) { console.log("--safe-mode --tools --disallowedTools --strict-mcp-config --no-session-persistence --json-schema --input-format --output-format --setting-sources --settings --no-chrome"); process.exit(0); }
+if(args.includes("status")) { console.log(JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty",subscriptionType:${JSON.stringify(mode === "api" ? null : "max")}})); process.exit(0); }
+if(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.NODE_OPTIONS || process.env.ANTHROPIC_BASE_URL) process.exit(4);
+if(!args.includes("--safe-mode") || args[args.indexOf("--tools")+1]!=="" || args[args.indexOf("--disallowedTools")+1]!=="mcp__*") process.exit(5);
+if(${JSON.stringify(mode)}==="hang") { setInterval(()=>{},1000); }
+else {let raw="";process.stdin.on("data",c=>raw+=c);process.stdin.on("end",()=>{
+ const input=JSON.parse(raw); const content=input.message.content;
+ let value={text:"UNGROK_OK",toolCalls:[]};
+ if(${JSON.stringify(mode)}==="tools") value={text:"Using host tool",toolCalls:[{name:"lookup",arguments:JSON.stringify({query:"test"})}]};
+ if(${JSON.stringify(mode)}==="invalid") value={text:"bad",toolCalls:[{name:"forbidden",arguments:"{}"}]};
+ if(${JSON.stringify(mode)}==="echo") value={text:JSON.stringify(content),toolCalls:[]};
+ console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,structured_output:value,usage:{input_tokens:3,output_tokens:2}}));
+});}
+`, { mode: 0o700 });
+  const config = path.join(dir, "config.env");
+  fs.writeFileSync(config, `UNGROK_PROVIDER=claude\nUNGROK_CLI=${binary}\nUNGROK_MODEL=${model}\n`, { mode: 0o600 });
+  return { dir, binary, config };
 }
-async function server(t, handler) {
-  const s = http.createServer(handler);
-  await new Promise(resolve => s.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise(resolve => s.close(resolve)));
-  return `http://127.0.0.1:${s.address().port}/v1`;
-}
-async function result(session, tools = []) {
-  const ex = session.getExecutor([{ role: "user", content: "private prompt" }]);
-  const stream = ex.stream({}, "test-request", tools);
+
+test("subscription config is private immutable and rejects API settings", t => {
+  const { config } = fixture(t);
+  const loaded = runtime.loadConfig(config);
+  assert.equal(loaded.UNGROK_PROVIDER, "claude");
+  assert.ok(Object.isFrozen(loaded));
+  fs.appendFileSync(config, "XAI_API_KEY=not-allowed\n");
+  assert.throws(() => runtime.loadConfig(config), /invalid subscription/);
+  assert.throws(() => runtime.loadConfig("relative"), /absolute/);
+});
+
+test("config rejects public permissions symlinks and duplicate fields", t => {
+  const { config } = fixture(t);
+  fs.chmodSync(config, 0o644);
+  assert.throws(() => runtime.loadConfig(config), /private/);
+  fs.chmodSync(config, 0o600);
+  fs.symlinkSync(config, config + ".link");
+  assert.throws(() => runtime.loadConfig(config + ".link"), /private/);
+  fs.appendFileSync(config, "UNGROK_PROVIDER=claude\n");
+  assert.throws(() => runtime.loadConfig(config), /invalid/);
+});
+
+test("environment allowlist drops provider credentials and executable injection", () => {
+  const env = runtime.sanitizedEnv({ HOME: "/home/test", PATH: "/bin", ANTHROPIC_API_KEY: "secret", OPENAI_API_KEY: "secret", ANTHROPIC_BASE_URL: "https://bad", NODE_OPTIONS: "--require bad", BASH_ENV: "bad", HTTP_PROXY: "bad", CLAUDE_CODE_OAUTH_TOKEN: "secret", CODEX_HOME: "/native/account" });
+  assert.equal(env.HOME, "/home/test");
+  assert.equal(env.CODEX_HOME, "/native/account");
+  for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "NODE_OPTIONS", "BASH_ENV", "HTTP_PROXY", "CLAUDE_CODE_OAUTH_TOKEN"]) assert.ok(!(key in env));
+});
+
+test("native subscription status has no identity or credentials", async t => {
+  const { config } = fixture(t);
+  assert.deepEqual(await runtime.checkAuth(runtime.loadConfig(config)), { ok: true, provider: "claude", subscription: true });
+});
+
+test("non-subscription native auth is rejected without any model request", async t => {
+  const { config } = fixture(t, { mode: "api" });
+  await assert.rejects(runtime.checkAuth(runtime.loadConfig(config)), /subscription login/);
+});
+
+test("adapter preserves host contract and fixed configured model through tool result", async t => {
+  const { config } = fixture(t, { mode: "tools" });
+  const session = adapter.createXaiPromptSession({ envFile: config, requestedModel: "unrequested" });
+  const executor = session.getExecutor([{ role: "user", content: "look up this" }]);
+  const result = executor.stream({}, "request", [{ name: "lookup", parameters: { type: "object" } }]);
   const parts = [];
-  for await (const part of stream.fullStream) parts.push(part);
-  return { parts, response: await stream.response, usage: await stream.usage, state: ex.getState() };
-}
-
-test("text, tools, auth and immutable per-session configuration", async t => {
-  const requests = [];
-  const base = await server(t, (req, res) => {
-    let raw = "";
-    req.on("data", chunk => { raw += chunk; });
-    req.on("end", () => {
-      requests.push({ body: JSON.parse(raw), auth: req.headers.authorization });
-      res.writeHead(200, { "Content-Type": "text/event-stream" });
-      for (const event of [
-        { choices: [{ delta: { content: "hello" } }] },
-        { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "lookup", arguments: '{"q":' } }] } }] },
-        { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"ok"}' } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 3, completion_tokens: 2 } },
-      ]) res.write(`data: ${JSON.stringify(event)}\n\n`);
-      res.end("data: [DONE]\n\n");
-    });
-  });
-  const file = fixture(t, base);
-  const first = createXaiPromptSession({ envFile: file, requestedModel: "unexpected-model" });
-  fs.writeFileSync(file, `XAI_API_KEY=SECOND_SECRET\nSAND_XAI_BASE_URL=${base}\nSAND_XAI_MODEL=second-model\n`);
-  const second = createXaiPromptSession({ envFile: file });
-  const [a, b] = await Promise.all([result(first, [{ name: "lookup", parameters: { type: "object" } }]), result(second)]);
-  assert.equal(first.getModelId(), "test-model");
-  assert.equal(second.getModelId(), "second-model");
-  assert.deepEqual(new Set(requests.map(r => `${r.body.model}:${r.auth}`)), new Set(["test-model:Bearer TEST_SECRET", "second-model:Bearer SECOND_SECRET"]));
-  assert.equal(a.parts.find(p => p.type === "text-delta").textDelta, "hello");
-  assert.deepEqual(a.parts.find(p => p.type === "tool-call").args, { q: "ok" });
-  assert.equal(a.response.finishReason, "tool-calls");
-  assert.equal(a.usage.totalTokens, 5);
-  assert.ok(Array.isArray(b.state));
-  fs.writeFileSync(file, `SAND_XAI_BASE_URL=${base}\nSAND_XAI_MODEL=second-model\n`);
-  assert.throws(() => createXaiPromptSession({ envFile: file }), /XAI_API_KEY/);
+  for await (const part of result.fullStream) parts.push(part);
+  assert.equal(session.getModelId(), "sonnet");
+  const call = parts.find(part => part.type === "tool-call");
+  assert.equal(call.toolName, "lookup");
+  assert.deepEqual(call.args, { query: "test" });
+  const response = await result.response;
+  assert.equal(response.finishReason, "tool-calls");
+  assert.equal(response.messages[0].content.find(part => part.type === "tool-call").toolCallId, call.toolCallId);
+  executor.appendMessages(response.messages);
+  executor.appendMessages({ role: "tool", tool_call_id: call.toolCallId, content: "found" });
+  assert.equal(executor.getState().at(-1).content, "found");
+  assert.equal((await result.usage).totalTokens, 5);
 });
 
-test("missing key never reads environment or falls back to Grok auth", t => {
-  const file = fixture(t, "http://127.0.0.1:1/v1");
-  fs.writeFileSync(file, "SAND_XAI_BASE_URL=http://127.0.0.1:1/v1\nSAND_XAI_MODEL=test\n");
-  const old = process.env.XAI_API_KEY;
-  process.env.XAI_API_KEY = "MUST_NOT_USE";
-  try { assert.throws(() => createXaiPromptSession({ envFile: file }), /XAI_API_KEY/); }
-  finally { if (old === undefined) delete process.env.XAI_API_KEY; else process.env.XAI_API_KEY = old; }
-  assert.throws(() => createXaiPromptSession({}), /absolute envFile/);
+test("unknown host tools fail closed", async t => {
+  const { config } = fixture(t, { mode: "invalid" });
+  await assert.rejects(runtime.runStep({ config: runtime.loadConfig(config), messages: [{ role: "user", content: "hi" }], tools: [] }), /invalid host tool/);
 });
 
-test("endpoint and configuration validation reject unsafe inputs", t => {
-  for (const base of ["http://example.com/v1", "https://user:secret@example.com/v1", "https://example.com/v1?key=secret", "https://example.com/#secret", "file:///tmp/test"]) {
-    assert.throws(() => createXaiPromptSession({ envFile: fixture(t, base) }), /endpoint/);
-  }
-  assert.throws(() => createXaiPromptSession({ envFile: fixture(t, "https://example.com/v1", "NODE_OPTIONS=bad\n") }), /unsupported key/);
-  assert.throws(() => createXaiPromptSession({ envFile: fixture(t, "https://example.com/v1", "XAI_API_KEY=duplicate\n") }), /duplicate key/);
+test("Claude input preserves ordered images and full role-labelled tool history", () => {
+  const input = JSON.parse(runtime.claudeInput([
+    { role: "system", content: "rules" },
+    { role: "user", content: [{ type: "text", text: "read" }, { type: "image_url", image_url: { url: "data:image/png;base64,AQID" } }] },
+    { role: "assistant", tool_calls: [{ id: "x", function: { name: "lookup", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "x", content: "result" },
+  ], []));
+  const content = input.message.content;
+  assert.ok(content.some(part => part.type === "image" && part.source.data === "AQID"));
+  assert.ok(content.some(part => part.text?.includes('"role":"system"')));
+  assert.ok(content.some(part => part.text?.includes('"tool_call_id":"x"')));
 });
 
-test("HTTP errors and redirects never expose body or forward credentials", async t => {
-  let redirected = 0;
-  const destination = await server(t, (req, res) => { redirected++; res.end(); });
-  const base = await server(t, (req, res) => { res.writeHead(302, { Location: destination }); res.end("TEST_SECRET private prompt"); });
-  const logs = [];
-  const original = console.error;
-  console.error = (...args) => logs.push(args.join(" "));
-  let output;
-  try { output = await result(createXaiPromptSession({ envFile: fixture(t, base + "/private-path") })); }
-  finally { console.error = original; }
-  assert.equal(redirected, 0);
-  assert.equal(output.response.finishReason, "error");
-  assert.equal(output.parts.find(p => p.type === "error").error.message, "ungrok provider HTTP 302");
-  assert.doesNotMatch(logs.join("\n"), /TEST_SECRET|private prompt|private-path/);
-});
-
-test("schema normalization remains compatible", () => {
-  assert.deepEqual(normalizeToolParameters(null), { type: "object", properties: {} });
-  assert.deepEqual(normalizeToolParameters({ jsonSchema: { type: "object" } }), { type: "object", properties: {} });
-});
-
-test("unsafe file permissions, symlinks and oversized configuration are rejected", t => {
-  const file = fixture(t, "https://example.com/v1");
-  fs.chmodSync(file, 0o644);
-  assert.throws(() => createXaiPromptSession({ envFile: file }), /mode-600/);
-  fs.chmodSync(file, 0o600);
-  const link = file + ".link";
-  fs.symlinkSync(file, link);
-  assert.throws(() => createXaiPromptSession({ envFile: link }), /regular file/);
-  fs.appendFileSync(file, "#".repeat(65536));
-  assert.throws(() => createXaiPromptSession({ envFile: file }), /64 KiB/);
-});
-
-test("oversized SSE and non-SSE success responses fail safely", async t => {
-  for (const body of ["data: " + "x".repeat(1024 * 1024 + 1), '{"message":"secret response"}']) {
-    const base = await server(t, (req, res) => { res.writeHead(200); res.end(body); });
-    const output = await result(createXaiPromptSession({ envFile: fixture(t, base) }));
-    assert.equal(output.response.finishReason, "error");
-    assert.equal(output.parts.find(p => p.type === "error").error.message, "ungrok provider request failed");
-  }
-});
+module.exports = { fixture };

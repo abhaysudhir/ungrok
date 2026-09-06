@@ -1,27 +1,19 @@
 # Security
 
-ungrok modifies a remote host that can access your conversations, files, browser sessions, and connected services. Treat this as privileged software. Read the code before running it, and do not run it with sudo.
+ungrok changes a host with access to conversations, files, browser sessions, and connected services. Read the code and run as its authorized owner, without sudo.
 
-## Report privately
+Use [GitHub private vulnerability reporting](https://github.com/abhaysudhir/ungrok/security/advisories/new). If unavailable, request a private channel without sensitive public details. No response-time guarantee is offered.
 
-Use [GitHub private vulnerability reporting](https://github.com/abhaysudhir/ungrok/security/advisories/new). Do not open a public issue containing credentials, raw conversations, or an exploit that exposes another user's data.
+## Native boundaries
 
-If private reporting is unavailable, open a blank security-contact request without sensitive details so a private channel can be arranged. There is no promised response-time SLA for this experimental project.
+The official Claude Code or Codex client owns subscription sign-in and refresh. ungrok must not extract, store, intermediate, or publish its tokens. No API-key onboarding or fallback is supported.
 
-## Credential handling
+Native inference must not become a second tool executor. Runtime controls must disable independent tools, MCP, and applicable hooks. A prompt or read-only sandbox alone is insufficient. Keep unverified runtimes blocked; Grok's host remains responsible for tools.
 
-- Setup reads API keys through a hidden prompt or a private mode-600 file. Keys are not accepted as command-line arguments.
-- Configuration lives on the Grok computer in `~/sand-data/ungrok.env`. It is plaintext with restricted permissions, not a vault. Processes running as the same user can read it.
-- Backups can contain old provider configuration. Keep `~/.local/state/ungrok` private and out of uploaded archives.
-- The adapter never reads your Grok or Claude login files. It uses the explicit key in its configuration.
-- Remote endpoints require HTTPS. Loopback HTTP is allowed for a proxy on the same computer. Redirects are not followed.
-- The adapter logs session model and endpoint origin, not prompts, credentials, or provider error bodies. The host or provider may log data independently.
-- Image resizing runs the local Python/Pillow helper on untrusted image data. It uses bounded input, pixels, output, and execution time, but it is not an OS sandbox. Keep the pinned dependency reviewed and use a host account you are authorized to modify.
+Conversation, tool, and image data reach the selected provider. Native clients and the host may store their own logs/state. Review their settings; native sign-in is not a privacy guarantee. Processes sharing the host user may access native credentials.
 
-## Boundaries
+Configuration has provider/path/model rather than credentials, but private backups and logs can expose data. Keep them out of public archives. Do not collect other people's subscription logins or offer token-backed shared access. [Policy sources](docs/providers.md)
 
-Your endpoint receives prompt and tool-result data. ungrok cannot enforce the provider's retention or privacy policy. Bots sharing the host share its route. A new host bundle may replace the patch and restore default inference. The injected hook fails on adapter errors while present; this is not a billing guard for other paths or after updates.
+Auth/quota failure or invalid native output must stop without alternative billing. An update removing the hook can restore stock routing. This is not a billing guard.
 
-No telemetry or remote update check is built into the CLI. `probe` is an explicit network call to your configured endpoint. GitHub, cloned source, and external provider software have their own security boundaries.
-
-Security fixes target the current development line and newest prerelease. There is no stable-support commitment yet. No version is represented as independently security-audited.
+The alpha has no independent security audit or stable-support commitment. Report exact commits and native-client versions with synthetic sanitized reproductions.

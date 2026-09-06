@@ -5,69 +5,17 @@ const SYNTHETIC_USER = Symbol("ungrok synthetic continuation");
  * Sand / Grok Bot custom inference session.
  *
  * ungrok hardened derivative; see UPSTREAM.md and LICENSE.
- * Speaks OpenAI Chat Completions (+ SSE tools). Configuration is an immutable
+ * Runs the official subscription client; Grok remains the tool executor.
+ * Configuration is an immutable
  * per-session snapshot read only from the explicit envFile argument.
  */
 
 const fs = require("fs");
-const http = require("http");
-const https = require("https");
 const path = require("path");
 const { URL } = require("url");
 const { AsyncLocalStorage } = require("async_hooks");
 const configContext = new AsyncLocalStorage();
-const MAX_CONFIG_BYTES = 64 * 1024;
-const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
-const MAX_SSE_LINE_BYTES = 1024 * 1024;
-
-const ALLOWED_KEYS = new Set(["SAND_INFERENCE_PROVIDER", "XAI_API_KEY", "SAND_XAI_BASE_URL", "SAND_XAI_MODEL", "SAND_XAI_THINKING", "SAND_XAI_REASONING_EFFORT", "SAND_XAI_MAX_TOKENS", "SAND_XAI_PROMOTE_REASONING", "SAND_XAI_MAX_TOOL_CHARS", "SAND_XAI_MAX_SYSTEM_CHARS", "SAND_XAI_MAX_MESSAGE_CHARS", "SAND_XAI_MAX_INPUT_CHARS"]);
-
-function loadConfig(file) {
-  if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("ungrok requires an absolute envFile path");
-  const config = Object.create(null);
-  let raw;
-  let fd;
-  try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    const info = fs.fstatSync(fd);
-    if (!info.isFile() || info.size > MAX_CONFIG_BYTES || (info.mode & 0o077) || (process.getuid && info.uid !== process.getuid())) throw new Error("unsafe config");
-    raw = fs.readFileSync(fd, "utf8");
-    if (Buffer.byteLength(raw) > MAX_CONFIG_BYTES) throw new Error("oversized config");
-  } catch {
-    throw new Error("ungrok configuration must be a readable, owned, mode-600 regular file under 64 KiB");
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
-  for (let line of raw.split(/\r?\n/)) {
-    line = line.trim();
-    if (!line || line.startsWith("#")) continue;
-    if (line.startsWith("export ")) line = line.slice(7).trim();
-    const eq = line.indexOf("=");
-    if (eq < 1) throw new Error("ungrok configuration contains an invalid entry");
-    const key = line.slice(0, eq).trim();
-    let val = line.slice(eq + 1).trim();
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
-    if (!ALLOWED_KEYS.has(key)) throw new Error("ungrok configuration contains an unsupported key");
-    if (Object.hasOwn(config, key)) throw new Error("ungrok configuration contains a duplicate key");
-    config[key] = val;
-  }
-  for (const key of ["XAI_API_KEY", "SAND_XAI_BASE_URL", "SAND_XAI_MODEL"]) {
-    if (!config[key] || /[\x00-\x1f\x7f]/.test(config[key])) throw new Error(`ungrok configuration requires valid ${key}`);
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/.test(config.SAND_XAI_MODEL)) throw new Error("ungrok model identifier is invalid");
-  let url;
-  try { url = new URL(config.SAND_XAI_BASE_URL); } catch { throw new Error("ungrok endpoint URL is invalid"); }
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  if (url.username || url.password || url.search || url.hash || !(url.protocol === "https:" || (url.protocol === "http:" && loopback))) throw new Error("ungrok endpoint requires HTTPS or loopback HTTP, without credentials, query, or fragment");
-  config.SAND_XAI_BASE_URL = url.href.replace(/\/+$/, "");
-  return Object.freeze(config);
-}
+const { loadConfig, runStep } = require("./subscription-runtime.cjs");
 
 function env(name, fallback) {
   const v = configContext.getStore()?.[name];
@@ -188,19 +136,11 @@ function normalizeToolParameters(raw) {
 }
 
 function mapModelId(requestedModel) {
-  const model = env("SAND_XAI_MODEL");
-  if (!model) throw new Error("ungrok model requires a session configuration");
-  return model;
+  const config = configContext.getStore();
+  if (!config) throw new Error("ungrok model requires a session configuration");
+  return config.UNGROK_MODEL || config.UNGROK_PROVIDER + "-default";
 }
 
-function resolveAuth() {
-  return {
-    mode: "key",
-    token: env("XAI_API_KEY"),
-    baseUrl: env("SAND_XAI_BASE_URL"),
-    extraHeaders: {},
-  };
-}
 
 function normalizeUsage(usage) {
   const u = usage && typeof usage === "object" ? usage : {};
@@ -629,7 +569,7 @@ function trimConvertedMessages(messages, model) {
   if (after > maxTotal) throw new Error("latest request and tool context exceed text budget; start a shorter task");
   if (after !== before || dropped || normalized.length !== beforeCount) {
     console.error(
-      `[sand-xai] trimmed input chars ${before}→${after} msgs ${beforeCount}→${normalized.length} droppedTurns=${dropped} model=${model}`
+      `[ungrok] trimmed input chars ${before}→${after} msgs ${beforeCount}→${normalized.length} droppedTurns=${dropped} model=${model}`
     );
   }
   return normalized;
@@ -730,116 +670,6 @@ function convertTools(tools) {
   });
 }
 
-function maxTokens() {
-  const raw = env("SAND_XAI_MAX_TOKENS", "8192");
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return Math.min(Math.floor(n), 131072);
-}
-
-function thinkingEnabled() {
-  const v = env("SAND_XAI_THINKING", "disabled");
-  return truthy(v);
-}
-
-function reasoningEffort() {
-  const v = env("SAND_XAI_REASONING_EFFORT", "");
-  if (!v) return undefined;
-  const s = String(v).toLowerCase();
-  if (s === "off" || s === "none" || s === "disabled") return undefined;
-  return s;
-}
-
-function httpPostStream(urlString, { headers, body, onData, signal }) {
-  if (signal?.aborted) return Promise.reject(new Error("provider request cancelled"));
-  const u = new URL(urlString);
-  const lib = u.protocol === "https:" ? https : http;
-  const payload = Buffer.from(body, "utf8");
-  if (payload.length > MAX_REQUEST_BYTES) throw new Error("ungrok request exceeds size limit");
-  const reqHeaders = {
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-    "Content-Length": String(payload.length),
-    ...headers,
-  };
-  let deadline;
-  let removeAbort = () => {};
-  return new Promise((resolve, reject) => {
-    const req = lib.request(
-      {
-        protocol: u.protocol,
-        hostname: u.hostname.replace(/^\[|\]$/g, ""),
-        port: u.port || (u.protocol === "https:" ? 443 : 80),
-        path: `${u.pathname}${u.search}`,
-        method: "POST",
-        headers: reqHeaders,
-      },
-      (res) => {
-        const failResponse = message => {
-          reject(new Error(message));
-          res.destroy();
-          req.destroy();
-        };
-        let buffer = "";
-        let received = 0;
-        let choicesSeen = false;
-        let completionSeen = false;
-        const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 300;
-        if (!ok) {
-          const err = new Error(`ungrok provider HTTP ${res.statusCode}`);
-          err.status = res.statusCode;
-          reject(err);
-          res.destroy();
-          return;
-        }
-        res.setEncoding("utf8");
-        res.on("error", reject);
-        res.on("aborted", () => reject(new Error("provider response interrupted")));
-        res.on("data", (chunk) => {
-          received += Buffer.byteLength(chunk);
-          if (received > MAX_RESPONSE_BYTES) { failResponse("ungrok response exceeds size limit"); return; }
-          buffer += chunk;
-          let idx;
-          while ((idx = buffer.indexOf("\n")) >= 0) {
-            let line = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 1);
-            if (Buffer.byteLength(line) > MAX_SSE_LINE_BYTES) { failResponse("ungrok SSE event exceeds size limit"); return; }
-            if (line.endsWith("\r")) line = line.slice(0, -1);
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (!data) continue;
-            if (data === "[DONE]") { completionSeen = true; continue; }
-            try {
-              const event = JSON.parse(data);
-              if (Array.isArray(event?.choices) && event.choices.length) choicesSeen = true;
-              if (event?.choices?.some(choice => choice.finish_reason != null)) completionSeen = true;
-              onData(event);
-            } catch {
-              failResponse("ungrok provider returned invalid stream data");
-              return;
-            }
-          }
-          if (Buffer.byteLength(buffer) > MAX_SSE_LINE_BYTES) failResponse("ungrok SSE event exceeds size limit");
-        });
-        res.on("end", () => {
-          if (!choicesSeen) { reject(new Error("ungrok provider returned no Chat Completions stream")); return; }
-          if (!completionSeen) { reject(new Error("ungrok provider stream ended before completion")); return; }
-          resolve();
-        });
-      }
-    );
-    req.setTimeout(300000, () => {
-      req.destroy(new Error("xAI request timed out"));
-    });
-    deadline = setTimeout(() => req.destroy(new Error("ungrok request deadline exceeded")), 300000);
-    req.on("error", reject);
-    const onAbort = () => req.destroy(new Error("provider request cancelled"));
-    signal?.addEventListener("abort", onAbort, { once: true });
-    removeAbort = () => signal?.removeEventListener("abort", onAbort);
-    if (signal?.aborted) onAbort();
-    req.end(payload);
-  }).finally(() => { clearTimeout(deadline); removeAbort(); });
-}
 
 function buildResponseMessages(text, toolCalls) {
   if (toolCalls.length) {
@@ -880,147 +710,29 @@ function errorResult(modelId, invocationId, err) {
   };
 }
 
-async function runStream({ model, messages, tools, invocationId, auth, signal, onPart }) {
-  const trimmed = trimConvertedMessages(convertMessages(messages), model);
-  const converted = await prepareInlineImages(trimmed, signal);
-  const openaiTools = convertTools(tools);
-
-  const headers = {
-    Authorization: `Bearer ${auth.token || "missing"}`,
-    ...auth.extraHeaders,
-  };
-
-  const body = {
-    model,
-    messages: converted,
-    stream: true,
-    stream_options: { include_usage: true },
-  };
-  if (openaiTools && openaiTools.length) {
-    body.tools = openaiTools;
-    body.tool_choice = "auto";
-  }
-  const mt = maxTokens();
-  if (mt != null) body.max_tokens = mt;
-  const effort = thinkingEnabled() ? reasoningEffort() : undefined;
-  if (effort) body.reasoning_effort = effort;
-
-  const url = `${auth.baseUrl}/chat/completions`;
-  const toolAcc = new Map();
-  let text = "";
-  let reasoning = "";
-  let finishReason = "stop";
-  let usageRaw = {};
-  const parts = [];
-
-  const push = (part) => {
-    parts.push(part);
-    if (onPart) onPart(part);
-  };
-
+async function runStream({ model, messages, tools, invocationId, config, signal, onPart }) {
   try {
-    await httpPostStream(url, {
-      signal,
-      headers,
-      body: JSON.stringify(body),
-      onData: (evt) => {
-        if (evt && evt.usage) usageRaw = evt.usage;
-        const choice = evt && evt.choices && evt.choices[0];
-        if (!choice) return;
-        if (choice.finish_reason) finishReason = choice.finish_reason;
-        const delta = choice.delta || choice.message || {};
-        const contentDelta = delta.content;
-        if (typeof contentDelta === "string" && contentDelta) {
-          text += contentDelta;
-          push({ type: "text-delta", textDelta: contentDelta });
-        } else if (Array.isArray(contentDelta)) {
-          for (const block of contentDelta) {
-            const t = asString(block.text ?? block.content ?? "");
-            if (t) {
-              text += t;
-              push({ type: "text-delta", textDelta: t });
-            }
-          }
-        }
-        const think =
-          delta.reasoning_content ||
-          delta.reasoning ||
-          (delta.thinking && (delta.thinking.text || delta.thinking));
-        if (typeof think === "string" && think) {
-          reasoning += think;
-          push({ type: "reasoning", textDelta: think });
-        }
-        const tcs = delta.tool_calls;
-        if (Array.isArray(tcs)) {
-          for (const tc of tcs) {
-            const idx = tc.index != null ? tc.index : toolAcc.size;
-            let acc = toolAcc.get(idx);
-            if (!acc) {
-              acc = { id: "", name: "", args: "" };
-              toolAcc.set(idx, acc);
-            }
-            if (tc.id) acc.id = sanitizeToolId(tc.id);
-            const fn = tc.function || {};
-            if (fn.name) {
-              acc.name = sanitizeToolName(fn.name);
-              if (!acc.started) {
-                acc.started = true;
-                push({
-                  type: "tool-call-streaming-start",
-                  toolCallId: acc.id || `call_${idx}`,
-                  toolName: acc.name,
-                });
-              }
-            }
-            if (fn.arguments) {
-              acc.args += fn.arguments;
-              push({
-                type: "tool-call-delta",
-                toolCallId: acc.id || `call_${idx}`,
-                toolName: acc.name || "tool",
-                argsTextDelta: fn.arguments,
-              });
-            }
-          }
-        }
-      },
-    });
-  } catch (err) {
-    const safeError = new Error(err && Number.isInteger(err.status) ? `ungrok provider HTTP ${err.status}` : "ungrok provider request failed");
-    return errorResult(model, invocationId, safeError);
+    const converted = await prepareInlineImages(trimConvertedMessages(convertMessages(messages), model), signal);
+    const result = await runStep({ config, messages: converted, tools: convertTools(tools) || [], signal });
+    const parts = [];
+    const push = part => { parts.push(part); if (onPart) onPart(part); };
+    if (result.text) push({ type: "text-delta", textDelta: result.text });
+    const toolCalls = result.toolCalls.map(call => ({
+      id: "call_" + require("crypto").randomUUID().replace(/-/g, ""),
+      name: call.name,
+      args: JSON.parse(call.arguments),
+    }));
+    for (const call of toolCalls) push({ type: "tool-call", toolCallId: call.id, toolName: call.name, args: call.args });
+    const usage = normalizeUsage(result.usage || {});
+    const response = { modelId: model, messages: buildResponseMessages(result.text, toolCalls), finishReason: toolCalls.length ? "tool-calls" : "stop" };
+    push({ type: "finish", finishReason: response.finishReason, usage, response });
+    return { parts, response, usage, extendedUsage: normalizeExtendedUsage(result.usage || {}), providerMetadata: {}, invocationId };
+  } catch (error) {
+    const message = error?.code === "PROVIDER_REFUSED"
+      ? "native provider refused this request; no retry was attempted"
+      : "native subscription step failed; run ungrok doctor or probe to check client readiness";
+    return errorResult(model, invocationId, new Error(message));
   }
-
-  const toolCalls = [];
-  for (const acc of toolAcc.values()) {
-    const id = acc.id || sanitizeToolId(`call_${toolCalls.length}`);
-    const name = acc.name || "tool";
-    let args;
-    try {
-      args = JSON.parse(acc.args);
-      if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error();
-    } catch {
-      return errorResult(model, invocationId, new Error("ungrok provider returned invalid tool arguments"));
-    }
-    toolCalls.push({ id, name, args });
-    push({ type: "tool-call", toolCallId: id, toolName: name, args });
-  }
-
-  const usage = normalizeUsage(usageRaw);
-  const response = {
-    modelId: model,
-    messages: buildResponseMessages(text, toolCalls),
-    finishReason: finishReason === "tool_calls" ? "tool-calls" : finishReason || "stop",
-  };
-  push({ type: "finish", finishReason: response.finishReason, usage, response });
-
-  return {
-    parts,
-    response,
-    usage,
-    extendedUsage: normalizeExtendedUsage(usageRaw),
-    providerMetadata: reasoning ? { reasoning } : {},
-    invocationId,
-  };
 }
 
 // A custom iterator, not an async generator: return() must cancel even while
@@ -1091,14 +803,13 @@ function createExecutor(session, config) {
         }
       }
       const processing = configContext.run(config, async () => {
-        const auth = resolveAuth();
         const model = mapModelId(session.requestedModel);
         return runStream({
           model,
           messages: [...state.messages],
           tools,
           invocationId,
-          auth,
+          config,
           signal: controller.signal,
           onPart: part => fullStream.push(part),
         });
@@ -1130,16 +841,15 @@ function createXaiPromptSession(options) {
   return configContext.run(config, () => {
   const requestedModel = opts.requestedModel;
   const model = mapModelId(requestedModel);
-  const auth = resolveAuth();
   console.error(
-    `[ungrok] session model=${model} endpoint=${new URL(auth.baseUrl).origin}`
+    `[ungrok] native session provider=${config.UNGROK_PROVIDER} model=${model}`
   );
   const session = {
     requestedModel,
     onRequestId: opts.onRequestId,
     sessionOptions: opts.sessionOptions,
     getModelId() {
-      return config.SAND_XAI_MODEL;
+      return config.UNGROK_MODEL || config.UNGROK_PROVIDER + "-default";
     },
     getExecutor(initialMessages) {
       const ex = createExecutor(session, config);

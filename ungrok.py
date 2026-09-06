@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import getpass
 import hashlib
 import json
 import os
@@ -17,11 +16,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
-VERSION = "0.1.0-rc.2"
+VERSION = "0.2.0-alpha.1"
 ROOT = Path(__file__).resolve().parent
 BEGIN = "      // ungrok:begin v1"
 END = "      // ungrok:end v1"
@@ -35,7 +31,9 @@ ANCHOR = """      const requestedModel = resolveSandRequestedModel({
       });
       const session = createCursorInferencePromptSession({"""
 CALL = "      const session = createCursorInferencePromptSession({"
-KEYS = {"SAND_XAI_BASE_URL", "SAND_XAI_MODEL", "XAI_API_KEY", "SAND_XAI_THINKING"}
+KEYS = {"UNGROK_PROVIDER", "UNGROK_MODEL", "UNGROK_CLI"}
+RUNTIME_TIMEOUTS = {"status": 45, "probe": 210}
+RUNTIME_STOP_GRACE = 5
 
 
 class Failure(Exception):
@@ -80,7 +78,9 @@ def atomic_write(path, data, mode=0o600):
 
 
 def validate_config(values):
-    missing = {"SAND_XAI_BASE_URL", "SAND_XAI_MODEL", "XAI_API_KEY"} - values.keys()
+    if any(key.startswith("SAND_") or "API_KEY" in key for key in values):
+        raise Failure("Legacy API configuration is unsupported. It was not migrated or deleted. Use subscription setup with a new config.")
+    missing = {"UNGROK_PROVIDER", "UNGROK_CLI"} - values.keys()
     if missing:
         raise Failure("Missing provider fields: " + ", ".join(sorted(missing)))
     for key, value in values.items():
@@ -90,25 +90,43 @@ def validate_config(values):
             raise Failure("Provider values must not contain outer quotes or whitespace.")
         if len(value.encode("utf-8")) > 16384:
             raise Failure("Provider field exceeds the 16 KiB limit.")
-    try:
-        if any(c.isspace() for c in values["SAND_XAI_BASE_URL"]):
-            raise ValueError("Whitespace in endpoint")
-        base = urllib.parse.urlsplit(values["SAND_XAI_BASE_URL"])
-        port = base.port
-    except ValueError:
-        raise Failure("Invalid endpoint URL.") from None
-    del port
-    if not base.hostname or base.username is not None or base.password is not None or base.query or base.fragment:
-        raise Failure("Endpoint needs a hostname and cannot contain credentials, a query, or a fragment.")
-    if base.scheme != "https" and not (
-        base.scheme == "http" and base.hostname in {"127.0.0.1", "localhost", "::1"}
-    ):
-        raise Failure("Use HTTPS, or HTTP on localhost/127.0.0.1/::1 for a local proxy.")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}", values["SAND_XAI_MODEL"]):
-        raise Failure("Invalid model identifier. Use the provider's model ID, not a display name.")
-    if values.get("SAND_XAI_THINKING", "disabled") != "disabled":
-        raise Failure("v0.1 supports SAND_XAI_THINKING=disabled only.")
-    return dict(values, SAND_XAI_THINKING="disabled")
+    if values["UNGROK_PROVIDER"] not in {"claude", "chatgpt"}:
+        raise Failure("Choose the claude or chatgpt subscription provider.")
+    if not Path(values["UNGROK_CLI"]).is_absolute():
+        raise Failure("UNGROK_CLI must be an absolute official CLI executable path.")
+    if "UNGROK_MODEL" in values and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,199}", values["UNGROK_MODEL"]):
+        raise Failure("Invalid native model alias.")
+    return dict(values)
+
+
+def native_env():
+    """No API keys, provider overrides, injected tokens, or proxy inheritance."""
+    allowed = {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "COLORTERM",
+               "TMPDIR", "TMP", "TEMP", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+               "DBUS_SESSION_BUS_ADDRESS", "CLAUDE_CONFIG_DIR", "CODEX_HOME"}
+    clean = {key: value for key, value in os.environ.items() if key in allowed or key.startswith("LC_")}
+    clean.update(CLAUDE_CODE_SAFE_MODE="1", DISABLE_TELEMETRY="1", DISABLE_ERROR_REPORTING="1")
+    return clean
+
+
+def resolve_cli(provider, supplied=None):
+    command = "claude" if provider == "claude" else "codex"
+    found = str(supplied) if supplied else shutil.which(command)
+    if not found or not Path(found).is_absolute() or not Path(found).is_file() or not os.access(found, os.X_OK):
+        raise Failure(f"Official {command} CLI not found. Install it on Grok Bot's computer using docs/providers.md, then retry with --cli /absolute/path/{command}.")
+    return found
+
+
+def login(provider, supplied=None, node=None):
+    if sys.platform != "linux":
+        raise Failure("Run login in Grok Bot's remote Linux computer terminal, not on your Mac.")
+    executable = resolve_cli(provider, supplied)
+    args = ["auth", "login", "--claudeai"] if provider == "claude" else ["login", "--device-auth"]
+    result = subprocess.run([executable, *args], env=native_env())
+    if result.returncode:
+        raise Failure("Official CLI login did not complete. No credential files were read or copied by ungrok.")
+    runtime_check({"UNGROK_PROVIDER": provider, "UNGROK_CLI": executable}, "status", node)
+    print(f"Native {provider} subscription login verified. Credentials remain with the official CLI.")
 
 
 def read_config(path):
@@ -174,6 +192,8 @@ class Installation:
         self.host = self.host_dir / "host-main.cjs"
         self.adapter = self.host_dir / "ungrok-session.cjs"
         self.image_helper = self.host_dir / "ungrok-resize-image.py"
+        self.subscription_helper = self.host_dir / "subscription-runtime.cjs"
+        self.codex_helper = self.host_dir / "codex-subscription.cjs"
         self.config = self.data_dir / "ungrok.env"
         self.manifest = self.state_dir / "install.json"
         self.node = args.node
@@ -208,11 +228,11 @@ class Installation:
         try:
             info = json.loads(read_regular(self.manifest))
             required = {"version", "host", "config", "backup", "original_sha256", "patched_sha256",
-                        "adapter_sha256", "image_helper_sha256"}
+                        "adapter_sha256", "image_helper_sha256", "subscription_helper_sha256", "codex_helper_sha256"}
             if not isinstance(info, dict) or not required.issubset(info) or any(
                 not isinstance(info[key], str) or not info[key] for key in required
             ) or any(not re.fullmatch(r"[0-9a-f]{64}", info[key]) for key in required if key.endswith("_sha256")):
-                raise Failure("Invalid installation record. Inspect private backups before proceeding.")
+                raise Failure("Invalid or older installation record. For an older ungrok release, roll back with that release's checkout before migrating. Private files were not changed.")
             if info["host"] != str(self.host) or info["config"] != str(self.config):
                 raise Failure("Saved installation belongs to different paths. Use its original path overrides.")
             return info
@@ -238,6 +258,8 @@ class Installation:
 
     def install(self, values, confirm):
         original = self.preflight()
+        if self.config.exists():
+            read_config(self.config)  # Never overwrite a legacy API configuration.
         if self.is_current(original):
             info = self.load_manifest()
             self.original_backup(info)
@@ -248,6 +270,10 @@ class Installation:
                 raise Failure("Installed adapter was modified. Refusing to overwrite it.")
             if self.image_helper.exists() and digest(read_regular(self.image_helper)) != info.get("image_helper_sha256"):
                 raise Failure("Installed image helper was modified. Refusing to overwrite it.")
+            if self.subscription_helper.exists() and digest(read_regular(self.subscription_helper)) != info["subscription_helper_sha256"]:
+                raise Failure("Installed subscription runtime was modified. Refusing to overwrite it.")
+            if self.codex_helper.exists() and digest(read_regular(self.codex_helper)) != info["codex_helper_sha256"]:
+                raise Failure("Installed Codex runtime was modified. Refusing to overwrite it.")
             candidate = original
         else:
             candidate = patch_bytes(original, self.config)
@@ -259,6 +285,20 @@ class Installation:
                     raise Failure("Existing adapter is not the recorded ungrok version. Nothing changed.")
         vendor = read_regular(ROOT / "vendor/xai-prompt-session.cjs")
         image_helper = read_regular(ROOT / "scripts/resize_image.py")
+        subscription_helper = read_regular(ROOT / "vendor/subscription-runtime.cjs")
+        codex_helper = read_regular(ROOT / "vendor/codex-subscription.cjs")
+        if info and digest(codex_helper) != info["codex_helper_sha256"]:
+            raise Failure("Codex runtime differs from installation. Roll back with the installed checkout before upgrading.")
+        if not info and self.codex_helper.exists():
+            previous = self.load_manifest()
+            if digest(read_regular(self.codex_helper)) != previous["codex_helper_sha256"]:
+                raise Failure("Existing Codex runtime is not the recorded version. Nothing changed.")
+        if info and digest(subscription_helper) != info["subscription_helper_sha256"]:
+            raise Failure("Subscription runtime differs from installation. Roll back with the installed checkout before upgrading.")
+        if not info and self.subscription_helper.exists():
+            previous = self.load_manifest()
+            if digest(read_regular(self.subscription_helper)) != previous["subscription_helper_sha256"]:
+                raise Failure("Existing subscription runtime is not the recorded version. Nothing changed.")
         if info and digest(image_helper) != info.get("image_helper_sha256"):
             raise Failure("Image helper version differs from installation. Roll back with the installed checkout before upgrading.")
         if not info and self.image_helper.exists():
@@ -268,10 +308,13 @@ class Installation:
         values = validate_config(values)
         self.syntax(candidate, "patched host")
         self.syntax(vendor, "provider adapter")
-        watched = (self.adapter, self.image_helper, self.config, self.manifest)
+        self.syntax(subscription_helper, "subscription runtime")
+        self.syntax(codex_helper, "Codex runtime")
+        runtime_check(values, "status", self.node)
+        watched = (self.adapter, self.image_helper, self.subscription_helper, self.codex_helper, self.config, self.manifest)
         before = {path: (read_regular(path), stat.S_IMODE(path.stat().st_mode))
                   if path.exists() or path.is_symlink() else None for path in watched}
-        confirm("This changes the shared host for ALL bots. Prompts and tool results go to your endpoint. Continue?")
+        confirm("This changes the shared host for ALL bots. Prompts and tool results use your native subscription CLI. Continue?")
         secure_dir(self.state_dir)
         with self.lock():
             if read_regular(self.host) != original:
@@ -282,19 +325,23 @@ class Installation:
                     raise Failure("Installation files changed during confirmation. Nothing overwritten; retry doctor.")
             backup = Path(tempfile.mkdtemp(prefix="backup-", dir=self.state_dir))
             atomic_write(backup / "host-main.cjs", original)
-            targets = [(self.adapter, vendor, 0o600), (self.image_helper, image_helper, 0o600), (self.config, encode_config(values), 0o600),
+            targets = [(self.adapter, vendor, 0o600), (self.image_helper, image_helper, 0o600),
+                       (self.subscription_helper, subscription_helper, 0o600), (self.config, encode_config(values), 0o600),
+                       (self.codex_helper, codex_helper, 0o600),
                        (self.host, candidate, stat.S_IMODE(self.host.stat().st_mode))]
             old = {}
             for target, _, _ in targets:
                 old[target] = (read_regular(target), stat.S_IMODE(target.stat().st_mode)) if target.exists() else None
                 if target == self.config and old[target]:
                     atomic_write(backup / "provider.env", old[target][0])
-                elif target in (self.adapter, self.image_helper) and old[target]:
+                elif target in (self.adapter, self.image_helper, self.subscription_helper, self.codex_helper) and old[target]:
                     atomic_write(backup / target.name, old[target][0])
             record = info or {
                 "version": VERSION, "host": str(self.host), "config": str(self.config),
                 "backup": str(backup / "host-main.cjs"), "original_sha256": digest(original),
                 "patched_sha256": digest(candidate), "adapter_sha256": digest(vendor), "image_helper_sha256": digest(image_helper),
+                "subscription_helper_sha256": digest(subscription_helper),
+                "codex_helper_sha256": digest(codex_helper),
             }
             changed = []
             try:
@@ -341,6 +388,10 @@ class Installation:
                 raise Failure("Host is patched but adapter is missing or changed. Inspect it, then use repair.")
             if not self.image_helper.exists() or digest(read_regular(self.image_helper)) != info.get("image_helper_sha256"):
                 raise Failure("Image helper is missing or changed. Inspect it, then use repair.")
+            if not self.subscription_helper.exists() or digest(read_regular(self.subscription_helper)) != info["subscription_helper_sha256"]:
+                raise Failure("Subscription runtime is missing or changed. Inspect it, then use repair.")
+            if not self.codex_helper.exists() or digest(read_regular(self.codex_helper)) != info["codex_helper_sha256"]:
+                raise Failure("Codex runtime is missing or changed. Inspect it, then use repair.")
             self.syntax(original, "installed host")
             self.syntax(read_regular(self.adapter), "installed adapter")
             state = "Installed files match recorded hashes."
@@ -350,8 +401,7 @@ class Installation:
         print(state)
         if self.config.exists():
             values = read_config(self.config)
-            base = urllib.parse.urlsplit(values["SAND_XAI_BASE_URL"])
-            print(f"Provider config valid: model={values['SAND_XAI_MODEL']} endpoint={base.scheme}://{base.netloc}")
+            print(f"Subscription config valid: provider={values['UNGROK_PROVIDER']} model={values.get('UNGROK_MODEL', 'CLI default')}")
         else:
             raise Failure("No ungrok provider configuration. Run setup. No network request was made.")
         print("Read-only check. Provider access and live app routing are NOT verified.")
@@ -383,6 +433,8 @@ class Installation:
         adapter_before = None
         config_before = None
         helper_before = None
+        subscription_before = None
+        codex_before = None
         if BEGIN.encode() in original:
             if not self.is_current(original):
                 raise Failure("Unknown patch; refusing restart.")
@@ -395,6 +447,12 @@ class Installation:
             helper_before = read_regular(self.image_helper)
             if digest(helper_before) != info.get("image_helper_sha256"):
                 raise Failure("Image helper does not match installation. Repair before restart.")
+            subscription_before = read_regular(self.subscription_helper)
+            if digest(subscription_before) != info["subscription_helper_sha256"]:
+                raise Failure("Subscription runtime does not match installation. Repair before restart.")
+            codex_before = read_regular(self.codex_helper)
+            if digest(codex_before) != info["codex_helper_sha256"]:
+                raise Failure("Codex runtime does not match installation. Repair before restart.")
         else:
             # A rollback restores this known layout. Do not restart foreign hooks
             # just because their bundle happens to pass Node's syntax check.
@@ -414,6 +472,8 @@ class Installation:
         if read_regular(self.host) != original or (adapter_before is not None and (
             read_regular(self.adapter) != adapter_before or read_regular(self.config) != config_before
             or read_regular(self.image_helper) != helper_before
+            or read_regular(self.subscription_helper) != subscription_before
+            or read_regular(self.codex_helper) != codex_before
         )):
             raise Failure("Host/adapter/config changed during confirmation. Nothing signaled; run doctor again.")
         os.kill(pid, signal.SIGTERM)
@@ -458,35 +518,70 @@ def verified_process(pid, host):
         raise Failure("Cannot verify host PID and supervisor. Refresh the process list.") from None
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def probe(values):
-    values = validate_config(values)
-    body = json.dumps({"model": values["SAND_XAI_MODEL"], "stream": False, "max_tokens": 32,
-                       "messages": [{"role": "user", "content": "Reply exactly UNGROK_OK"}]}).encode()
-    request = urllib.request.Request(values["SAND_XAI_BASE_URL"].rstrip("/") + "/chat/completions", data=body,
-                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + values["XAI_API_KEY"]})
-    # Do not inherit machine-wide HTTP proxies that might receive local proxy credentials.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+def stop_runtime(process):
+    """The CLI runtime and its native descendants share this isolated session."""
     try:
-        with opener.open(request, timeout=30) as response:
-            raw = response.read(1024 * 1024 + 1)
-            if len(raw) > 1024 * 1024:
-                raise Failure("Provider response exceeded probe limit.")
-            data = json.loads(raw)
-        text = data["choices"][0]["message"]["content"]
-        if not isinstance(text, str) or text.strip() != "UNGROK_OK":
-            raise Failure("Provider replied, but not with the exact test sentinel. Response body was not printed.")
-    except urllib.error.HTTPError as error:
-        raise Failure(f"Provider probe returned HTTP {error.code}. Body withheld; check endpoint, model, and credentials.") from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise Failure("Provider probe could not connect. Check the endpoint/proxy; no credentials were printed.") from None
-    except (ValueError, KeyError, IndexError, TypeError):
-        raise Failure("Provider response was not compatible Chat Completions JSON. Body withheld.") from None
-    print("Provider probe passed: UNGROK_OK. This tests the endpoint, not Grok Bot routing or tool support.")
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=RUNTIME_STOP_GRACE)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # Kill the group even if its leader exited: a descendant can still hold
+        # pipes open or continue native work. Never target the caller's group.
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=RUNTIME_STOP_GRACE)
+        except subprocess.TimeoutExpired:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+            process.wait(timeout=RUNTIME_STOP_GRACE)
+
+
+def runtime_check(values, command, node=None):
+    values = validate_config(values)
+    executable = node or ("/exec-daemon/node" if Path("/exec-daemon/node").is_file() else shutil.which("node"))
+    if not executable:
+        raise Failure("Node is required for native subscription checks.")
+    with tempfile.TemporaryDirectory(prefix="ungrok-auth-") as directory:
+        config = Path(directory) / "subscription.env"
+        atomic_write(config, encode_config(values))
+        process = None
+        try:
+            process = subprocess.Popen([executable, str(ROOT / "vendor/subscription-runtime.cjs"), command, str(config)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=native_env(),
+                                       start_new_session=os.name == "posix")
+            stdout, _ = process.communicate(timeout=RUNTIME_TIMEOUTS[command])
+            data = json.loads(stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            raise Failure("Native subscription check failed. Inspect the official CLI; diagnostic contents were withheld.") from None
+        finally:
+            if process is not None:
+                stop_runtime(process)
+        if process.returncode or not isinstance(data, dict) or data.get("ok") is not True or data.get("provider") != values["UNGROK_PROVIDER"]:
+            raise Failure("Native subscription check failed. Run login and consult docs/providers.md; no API fallback is available.")
+        if command == "probe" and data.get("sentinel") != "UNGROK_OK":
+            raise Failure("Native probe did not return the exact test sentinel. Response contents were withheld.")
+        if command == "status" and data.get("subscription") is not True:
+            raise Failure("Subscription authentication was not verified; API authentication is unsupported.")
+
+
+def probe(values, node=None):
+    runtime_check(values, "probe", node)
+    print("Native subscription probe passed: UNGROK_OK. This uses subscription allowance; live Grok Bot routing and tool support are NOT verified.")
 
 
 def confirmation(yes):
@@ -500,7 +595,7 @@ def confirmation(yes):
 
 def parser():
     home = Path.home()
-    result = argparse.ArgumentParser(description="ungrok: bring your own model to Grok Bot. Run in its remote Linux terminal.")
+    result = argparse.ArgumentParser(description="ungrok: bring your Claude or ChatGPT subscription to Grok Bot. Run in its remote Linux terminal.")
     result.add_argument("--version", action="version", version=VERSION)
     result.add_argument("--host-dir", default=str(home / "sand-host"))
     result.add_argument("--data-dir", default=str(home / "sand-data"))
@@ -508,13 +603,19 @@ def parser():
     result.add_argument("--node", default="/exec-daemon/node" if Path("/exec-daemon/node").is_file() else shutil.which("node"))
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor", help="read-only file/config/layout checks; no network")
+    auth = commands.add_parser("login", help="sign in through the official native subscription CLI")
+    auth.add_argument("provider", choices=("claude", "chatgpt"))
+    auth.add_argument("--cli", type=Path, help="absolute official CLI executable path")
     setup = commands.add_parser("setup", help="configure and patch; does not restart")
-    setup.add_argument("--config", type=Path, help="private mode-600 KEY=value file; never pass keys as arguments")
+    setup.add_argument("--config", type=Path, help="private mode-600 subscription KEY=value file; legacy API config is refused")
+    setup.add_argument("--provider", choices=("claude", "chatgpt"))
+    setup.add_argument("--cli", type=Path, help="absolute official CLI executable path")
+    setup.add_argument("--model", help="optional native model alias; otherwise the CLI default")
     setup.add_argument("--yes", action="store_true")
     for command in ("repair", "rollback"):
         child = commands.add_parser(command)
         child.add_argument("--yes", action="store_true")
-    commands.add_parser("probe", help="send a synthetic prompt to the configured endpoint; may incur provider cost")
+    commands.add_parser("probe", help="test native inference with a synthetic prompt; uses subscription allowance")
     restart = commands.add_parser("restart", help="signal one verified supervised host PID")
     restart.add_argument("--pid", type=int, required=True)
     restart.add_argument("--yes", action="store_true")
@@ -527,26 +628,33 @@ def main(argv=None):
     try:
         if args.command == "doctor":
             installation.doctor()
+        elif args.command == "login":
+            login(args.provider, args.cli, installation.node)
         elif args.command == "setup":
             original = installation.preflight()
             if not installation.is_current(original):
                 patch_bytes(original, installation.config)
             if args.config:
+                if args.provider or args.cli or args.model:
+                    raise Failure("Choose --config or --provider/--cli/--model, not both.")
                 values = read_config(args.config.expanduser().absolute())
             else:
-                if not sys.stdin.isatty():
-                    raise Failure("Interactive setup needs a terminal. Or use --config /private/provider.env --yes.")
-                print("All bots sharing this computer will send prompts and tool output to the endpoint you choose.")
-                print("Need a model account or key? Read docs/providers.md. OpenRouter needs no local proxy.")
-                print("API usage is billed separately from chat subscriptions. Enter keys here, never in chat.")
-                values = validate_config({"SAND_XAI_BASE_URL": input("Server address (base URL from the provider guide): ").strip(),
-                                          "SAND_XAI_MODEL": input("Model ID (copy the exact ID from your provider): ").strip(),
-                                          "XAI_API_KEY": getpass.getpass("API key or local proxy key, hidden: ")})
+                provider = args.provider
+                if not provider:
+                    if not sys.stdin.isatty():
+                        raise Failure("Choose --provider claude or --provider chatgpt, or use a private subscription --config file.")
+                    provider = input("Subscription provider (claude/chatgpt): ").strip().lower()
+                if provider not in {"claude", "chatgpt"}:
+                    raise Failure("Choose claude or chatgpt.")
+                values = {"UNGROK_PROVIDER": provider, "UNGROK_CLI": resolve_cli(provider, args.cli)}
+                if args.model:
+                    values["UNGROK_MODEL"] = args.model
+                values = validate_config(values)
             installation.install(values, confirmation(args.yes))
         elif args.command == "repair":
             installation.install(read_config(installation.config), confirmation(args.yes))
         elif args.command == "probe":
-            probe(read_config(installation.config))
+            probe(read_config(installation.config), installation.node)
         elif args.command == "rollback":
             installation.rollback(confirmation(args.yes))
         elif args.command == "restart":

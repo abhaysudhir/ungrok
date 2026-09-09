@@ -12,6 +12,8 @@ Start with read-only `./ungrok doctor`. Fix the prerequisite before repeating se
 | Native execution refused | Check exact Claude Code 2.1.263 or Codex 0.153.4, supported subscription auth, and runtime policy restrictions. Do not weaken checks. |
 | Model/usage unavailable | Check the account's current access and quota. |
 | Probe passes, app fails | Verify restart and fresh native-route logs; probe is not end-to-end. |
+| Chat works, but routing fails after restart | Check the on-disk hook and adapter. The old process may have retained code removed by a host update. Follow [update recovery](updates.md). |
+| Grok weekly usage increases | Verify fresh routing and scheduled activity separately. Custom inference does not guarantee zero Grok usage; do not suppress accounting. See [the legacy incident](compatibility.md#september-2026-legacy-host-incident). |
 | Tools/images fail | Mark that workflow unverified; text success does not prove it. |
 | Attachments stay staged locally | Upload precedes inference. Check desktop connectivity and avoid duplicate sends. |
 | Restart refused | Refresh the exact host PID and supervisor; do not kill generic processes. |

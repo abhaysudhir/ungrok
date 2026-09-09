@@ -8,7 +8,9 @@ Use Claude or ChatGPT inside Grok Bot through the official Claude Code or Codex 
 
 > **Early access:** Fresh-install testing is still pending, and Claude tool-result follow-up remains unverified. [Test results and supported versions](docs/compatibility.md)
 
-**Grok Bot version:** Earlier live compatibility tests used desktop **0.43.0**. Those tests covered the previous integration; the current subscription-based installer has not yet been verified end to end on a Grok Bot version. [Version details](docs/compatibility.md#grok-bot-version)
+**Grok Bot version:** The previous integration passed an upgrade smoke test on desktop **0.44.0** on September 6, 2026. A September 9 check found its on-disk routing hook and installed adapter missing; a manual repair passed fresh text/tool checks after a host restart. These are legacy integration results, not verification of the current subscription-based installer. [Version details](docs/compatibility.md#grok-bot-version)
+
+> **Usage and updates:** Custom-provider routing does not guarantee zero Grok usage. A working chat can outlive an on-disk hook that a host update removed. Verify the installed files and fresh routing after a controlled restart, not just an old success log. [September 9 findings](docs/compatibility.md#september-2026-legacy-host-incident)
 
 ## Getting Started
 

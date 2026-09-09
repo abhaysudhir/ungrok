@@ -4,7 +4,7 @@
 
 ## Grok Bot version
 
-The recorded desktop client version for earlier live compatibility work was **Grok Bot 0.43.0**, on **September 5, 2026**. This includes the historical post-update repair context. See the [archived test record](https://github.com/abhaysudhir/ungrok/blob/v0.1.0-rc.2/docs/compatibility.md#test-status).
+Earlier live compatibility work used **Grok Bot 0.43.0** on **September 5, 2026**. The same legacy installation was then tested on desktop **0.44.0** on **September 6**, with a routing repair and fresh text/tool verification on **September 9**. See the incident record below and the [older archived test record](https://github.com/abhaysudhir/ungrok/blob/v0.1.0-rc.2/docs/compatibility.md#test-status).
 
 Those results apply to the previous integration, not the current native-subscription installer or bot-led setup. **No Grok Bot version is yet certified by a complete live test of the current setup path.** The desktop version also does not identify the separately updated remote host bundle; future reports must record both the app version and host compatibility evidence.
 
@@ -39,6 +39,22 @@ Desktop uploads happen before inference. The inspected desktop 0.43.0 uploaded f
 The superseded compatibility repair had narrow live text, follow-up, and image results on September 5, 2026. It retained an older configuration/authentication path. [Historical record](../compat/README.md)
 
 Those are regression cases, not native runtime, permission, or billing verification.
+
+### September 2026 legacy host incident
+
+This record concerns the previous API-based adapter, **not 0.2.0-alpha.1**, its native clients, or its installer/repair commands.
+
+| Date | Observed result | What it establishes |
+| --- | --- | --- |
+| September 6, desktop 0.44.0 | Text, terminal results, one image, and image follow-up passed. Bot-reported file hashes matched an independent terminal check. | The running legacy integration worked after a desktop upgrade. It did not prove a clean install, restart survival, or zero Grok usage. |
+| September 9, desktop 0.44.0 | The remote host bundle had changed. Its on-disk custom hook and installed adapter were absent; saved provider source and settings remained. | Desktop version alone does not identify the remote runtime. Old custom-route logs are insufficient evidence for the current process. |
+| September 9, manual repair | The old repair script rejected the changed call site. A minimal routing patch and colocated image helper were restored, syntax-checked, and loaded through a verified host restart. A fresh app request passed text/tool checks and produced new custom-provider session logs. | Recovery was verified on that specific legacy host. The current native installer's repair path was not tested. Images were not retested in this repair session. |
+
+The September 6 archived host also lacked the static hook. The earlier test therefore verified running-process behavior, not that the hook on disk would survive the next restart. The September 9 repair checked both installed files and a fresh process. It did not install an automatic repair watchdog; later managed host updates can remove the customization again.
+
+**Billing remains a separate, unresolved question.** Displayed account usage was unchanged during the short repair test. That observation does not attribute prior usage or exclude delayed accounting. The legacy adapter returns token usage to the host, and the host records turn usage. The server-side weekly calculation was not established. No accounting fields, quota controls, billing settings, or routines were changed.
+
+[Cursor's billing documentation](https://cursor.com/help/grok-bot/plans) says Grok Bot usage is metered on the Cursor account and shared between desktop and iOS. Do not promise that selecting a different inference provider stops that meter, refunds recorded usage, or avoids charges for every Grok path.
 
 ## Reports
 

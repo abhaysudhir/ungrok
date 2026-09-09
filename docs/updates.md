@@ -6,11 +6,23 @@ Before updating, finish active work, pause routines, and keep recovery instructi
 
 ## After an update
 
-Run `./ungrok doctor` in the remote terminal. Check current host compatibility, native executable/version, subscription auth, and configuration.
+First identify the installed integration. The commands in this section apply to the current native alpha, not a legacy API-based host. Do not run the current installer over a foreign hook or copy an old host bundle over a new one.
+
+Run `./ungrok doctor` in the remote terminal. Check current host compatibility, native executable/version, subscription auth, and configuration. Inspect the installed hook and adapter even if the app still replies: a process may retain previously loaded code after files on disk have been replaced.
 
 Reinstall missing clients through official methods with approval. Complete their own sign-in if necessary. Do not recover access by pasting tokens into ungrok.
 
 After checks pass, run `./ungrok repair --yes` with shared-host consent, then `./ungrok probe`. Restart separately when idle and repeat real app verification. Stop on unknown layouts, changed hashes, auth failure, or unsupported native runtimes.
+
+Record the old and new host PIDs and confirm a fresh request produces a new provider-route log after restart. Historical log lines, a surviving login, unchanged desktop version, or one successful pre-restart chat do not prove the integration survived. Keep routines paused until those checks pass.
+
+The [September 9 legacy incident](compatibility.md#september-2026-legacy-host-incident) required a manual adaptation because the old repair script no longer matched the host call site. That specific recovery is not a general repair recipe or evidence that the native alpha supports the same host. No automatic update-survival mechanism was verified.
+
+## If Grok usage increases
+
+Check account usage and current routing separately. Record a baseline, inspect installed files, and correlate one bounded test with fresh route logs. Check scheduled work without assuming it is unwanted or pausing it without authorization. A missing hook can restore stock routing, but an increasing meter alone does not prove fallback.
+
+Preserve usage reporting and billing controls. Restoring custom routing does not erase recorded usage or guarantee a flat weekly meter. A brief unchanged reading can reflect delayed reporting. See [billing evidence and limits](compatibility.md#september-2026-legacy-host-incident).
 
 ## Migration from 0.1 or upstream
 
